@@ -7,3 +7,5 @@ _Build/
 cmake-build-debug/
 _PipelineCache/
 CMakeUserPresets.json
+# Lite: crash report written next to the emulator
+kyty_crash.txt

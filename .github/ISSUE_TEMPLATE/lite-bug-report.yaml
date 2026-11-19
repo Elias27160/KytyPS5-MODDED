@@ -1,0 +1,44 @@
+name: KytyPS5 Lite bug report
+description: Report a problem with this modded build (launcher, Lite optimizations or fixes).
+title: "[LITE BUG]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository is a modded build of KytyPS5. Report problems with it here, not on the
+        official KytyPS5 repository or Discord. If the same problem happens with the official
+        KytyPS5 build, report it there instead.
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      description: Title and title ID, for example "EA SPORTS UFC 5 (PPSA01234)". Leave empty for launcher issues.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happens
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: async
+    attributes:
+      label: Async pipeline compilation
+      options:
+        - "Off"
+        - "On"
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: CPU, GPU and RAM, for example "Ryzen 5 4500, GTX 1660 SUPER, 16 GB".
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Attach kyty_crash.txt from the emulator folder if it exists, and the full log if you have one.

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Original KytyPS5 project
+    url: https://github.com/KytyPS5/KytyPS5
+    about: The emulator this modded build is based on. Report issues that also happen there.
+  - name: KytyPS5 creator (Discord)
+    url: https://discord.gg/Y5TvKkacAt
+    about: Find the creator of KytyPS5.
