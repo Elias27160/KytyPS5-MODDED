@@ -50,22 +50,36 @@ protected:
 		UpdateScaledBackground();
 	}
 
-	void paintEvent(QPaintEvent* event) override {
-		QPainter painter(this);
-		auto     overlay = palette().color(QPalette::Base);
-		if (!m_scaled.isNull()) {
-			painter.drawPixmap((width() - m_scaled.width()) / 2, (height() - m_scaled.height()) / 2,
-			                   m_scaled);
-			overlay.setAlpha(160);
+	void paintEvent(QPaintEvent* /*event*/) override {
+		QPainter    painter(this);
+		const QRect area = rect();
+		if (m_scaled.isNull()) {
+			QLinearGradient blue(area.topLeft(), area.bottomRight());
+			blue.setColorAt(0, QColor(12, 34, 82));
+			blue.setColorAt(1, QColor(2, 8, 24));
+			painter.fillRect(area, blue);
+			return;
 		}
-		painter.fillRect(event->rect(), overlay);
+		painter.drawPixmap((width() - m_scaled.width()) / 2, (height() - m_scaled.height()) / 2,
+		                   m_scaled);
+		// Lite: console-style shading keeps text readable on the left and bottom, art on the right.
+		QLinearGradient left(area.topLeft(), area.topRight());
+		left.setColorAt(0, QColor(0, 0, 0, 215));
+		left.setColorAt(0.55, QColor(0, 0, 0, 90));
+		left.setColorAt(1, QColor(0, 0, 0, 0));
+		painter.fillRect(area, left);
+		QLinearGradient bottom(area.bottomLeft(), area.topLeft());
+		bottom.setColorAt(0, QColor(0, 0, 0, 225));
+		bottom.setColorAt(0.45, QColor(0, 0, 0, 40));
+		bottom.setColorAt(1, QColor(0, 0, 0, 120));
+		painter.fillRect(area, bottom);
 	}
 
 private:
 	void UpdateScaledBackground() {
 		m_scaled = m_source.isNull() ? QPixmap()
 		                             : m_source.scaled(size(), Qt::KeepAspectRatioByExpanding,
-		                                               Qt::FastTransformation);
+		                                               Qt::SmoothTransformation);
 	}
 
 	QString m_path;

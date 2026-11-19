@@ -5,11 +5,27 @@
 #include <common/TracyProtocol.hpp>
 #include <common/TracyVersion.hpp>
 #include <cstdio>
+#include <cstring>
+#include <string>
 #include <tracy/Tracy.hpp>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace Profiler {
 
 void SetThreadName(const char* name) {
+#if defined(_WIN32)
+	// Lite: also name the OS thread, so the overlay and external profilers can tell threads apart.
+	if (name != nullptr) {
+		std::wstring wide(name, name + std::strlen(name));
+		SetThreadDescription(GetCurrentThread(), wide.c_str());
+	}
+#endif
 	if (tracy::ProfilerAvailable() && name != nullptr) {
 		tracy::SetThreadName(name);
 	}

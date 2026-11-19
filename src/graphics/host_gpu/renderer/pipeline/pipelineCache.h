@@ -211,6 +211,10 @@ public:
 	Pipeline* GetGraphicsPipeline(const CommandBuffer& command, const DrawRenderState& state,
 	                              const DrawTargets& targets, bool may_defer);
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info);
+	// Lite: guest hash of the last compute program looked up (device-loss checkpoints).
+	[[nodiscard]] uint64_t LastComputeHash() const { return m_last_compute_hash; }
+	// Lite: guest hash of the last draw's pixel shader (vertex shader without one).
+	[[nodiscard]] uint64_t LastDrawHash() const { return m_last_draw_hash; }
 
 private:
 	friend struct PipelineCacheTestAccess;
@@ -257,6 +261,8 @@ private:
 	// Modules compiled per stage.
 	std::array<uint32_t, static_cast<size_t>(ShaderType::TessellationEvaluation) + 1> m_compiled {};
 	ProgramKey                             m_lookup_key;
+	uint64_t                               m_last_compute_hash = 0;
+	uint64_t                               m_last_draw_hash    = 0;
 	vk::PipelineCache             m_driver_cache = nullptr;
 	std::filesystem::path         m_driver_cache_path;
 	std::chrono::steady_clock::time_point m_next_driver_cache_save;

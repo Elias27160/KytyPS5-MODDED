@@ -21,6 +21,9 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdio>
+#include <string>
+#include <vector>
 
 namespace Libs::Graphics {
 
@@ -74,6 +77,53 @@ void GraphicContext::LogMemoryBudget() const {
 		     i, static_cast<uint64_t>(budgets[i].usage), static_cast<uint64_t>(budgets[i].budget),
 		     static_cast<uint64_t>(budgets[i].statistics.allocationBytes),
 		     static_cast<uint64_t>(budgets[i].statistics.blockBytes));
+	}
+}
+
+void GraphicContext::LogDeviceFault() const {
+	if (!device_fault_enabled || device == nullptr) {
+		return;
+	}
+	if (checkpoints_enabled && queue != nullptr) {
+		uint32_t count = 0;
+		queue.getCheckpointDataNV(&count, nullptr);
+		std::vector<vk::CheckpointDataNV> checkpoints(count);
+		queue.getCheckpointDataNV(&count, checkpoints.data());
+		for (const auto& checkpoint: checkpoints) {
+			char line[160];
+			std::snprintf(line, sizeof(line), "device checkpoint: %s marker 0x%016" PRIx64 "\n",
+			              vk::to_string(checkpoint.stage).c_str(),
+			              static_cast<uint64_t>(reinterpret_cast<uintptr_t>(checkpoint.pCheckpointMarker)));
+			Log::WriteToConsoleAndLog(line);
+		}
+	}
+	vk::DeviceFaultCountsEXT counts {};
+	if (device.getFaultInfoEXT(&counts, nullptr) != vk::Result::eSuccess) {
+		Log::WriteToConsoleAndLog("device fault: no info\n");
+		return;
+	}
+	std::vector<vk::DeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
+	std::vector<vk::DeviceFaultVendorInfoEXT>  vendors(counts.vendorInfoCount);
+	counts.vendorBinarySize = 0;
+	vk::DeviceFaultInfoEXT info {};
+	info.pAddressInfos = addresses.data();
+	info.pVendorInfos  = vendors.data();
+	(void)device.getFaultInfoEXT(&counts, &info);
+	Log::WriteToConsoleAndLog(std::string("device fault: ") + info.description.data() + "\n");
+	for (const auto& address: addresses) {
+		char line[160];
+		std::snprintf(line, sizeof(line), "device fault address: %s 0x%016" PRIx64 " precision 0x%" PRIx64 "\n",
+		              vk::to_string(address.addressType).c_str(),
+		              static_cast<uint64_t>(address.reportedAddress),
+		              static_cast<uint64_t>(address.addressPrecision));
+		Log::WriteToConsoleAndLog(line);
+	}
+	for (const auto& vendor: vendors) {
+		char line[320];
+		std::snprintf(line, sizeof(line), "device fault vendor: %s code 0x%" PRIx64 " data 0x%" PRIx64 "\n",
+		              vendor.description.data(), static_cast<uint64_t>(vendor.vendorFaultCode),
+		              static_cast<uint64_t>(vendor.vendorFaultData));
+		Log::WriteToConsoleAndLog(line);
 	}
 }
 

@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 
 #include "common/alignment.h"
+#include "common/liteAb.h"
 #include "common/assert.h"
 #include "common/debugCounters.h"
 #include "common/logging/log.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -79,6 +81,7 @@ void BufferCache::WriteDataBuffer(Buffer& buffer, uint64_t address, const void* 
 		dependency.pBufferMemoryBarriers    = &before;
 		command.pipelineBarrier2(dependency);
 		const vk::BufferCopy copy {offset, destination_offset, chunk};
+		LiteCheckpoint(command, 0xc0de000004000053ull);
 		command.copyBuffer(m_staging_buffer.Handle(), buffer.Handle(), 1, &copy);
 		auto after          = before;
 		after.srcStageMask  = vk::PipelineStageFlagBits2::eTransfer;
@@ -192,6 +195,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                       vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 1, &before, 0,
 	                       nullptr);
+	LiteCheckpoint(native, 0xc0de0000040000c4ull);
 	native.copyBuffer(buffer.Handle(), download.buffer->Handle(),
 	                  static_cast<uint32_t>(copies.size()), copies.data());
 
@@ -261,6 +265,12 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	const auto critical  = std::min(budget - 2 * threshold / 10, budget - GiB / 2);
 	m_trigger_gc_memory  = static_cast<uint64_t>(std::max<int64_t>(expected, GiB));
 	m_critical_gc_memory = static_cast<uint64_t>(std::max<int64_t>(critical, 2 * GiB));
+	if (budget <= target_threshold && std::getenv("KYTY_LITE_STOCK_GC") == nullptr) { // A/B switch
+		// Lite: same thresholds as the texture cache. Below 8 GiB the formulas above are
+		// critical every frame, which downloads GPU-written buffers with a full GPU sync.
+		m_trigger_gc_memory  = static_cast<uint64_t>(85 * budget / 100);
+		m_critical_gc_memory = static_cast<uint64_t>(budget + budget / 14);
+	}
 }
 
 BufferCache::~BufferCache() {
@@ -298,7 +308,19 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 			    std::max(Common::AlignDown(vaddr, DownloadWindowSize), buffer.CpuAddress());
 			const auto end = std::min(std::max(start + DownloadWindowSize, vaddr + size),
 			                          buffer.CpuAddress() + buffer.Size());
+			// Lite: remember the window, so PrefetchReadbacks downloads its next GPU writes early.
+			if (m_readback_windows.size() < MaxReadbackWindows) {
+				m_readback_windows[Common::AlignDown(vaddr, DownloadWindowSize)] = {vaddr, m_gc_tick};
+			}
 			if (DownloadBufferMemory<false>(buffer, start, end - start)) {
+				m_memory_tracker.UnmarkRegionAsGpuModified(start, end - start);
+			} else if (!HasGpuDirtyBytes(start, end - start)) {
+				// A prefetch already took these bytes: wait for that submitted download, not for
+				// a new submission.
+				if (m_prefetch_tick != 0) {
+					m_scheduler.Wait(m_prefetch_tick);
+					m_scheduler.WaitPriorityOperations(m_prefetch_tick);
+				}
 				m_memory_tracker.UnmarkRegionAsGpuModified(start, end - start);
 			}
 		}
@@ -307,6 +329,46 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 			QueueBdaSync(vaddr, size);
 		}
 	});
+}
+
+void BufferCache::PrefetchReadbacks() {
+	// Measured slower in UFC 6 fights (fewer FPS, worse 1% lows): only KYTY_LITE_PREFETCH=1
+	// turns it on.
+	static const bool opted = std::getenv("KYTY_LITE_PREFETCH") != nullptr;
+	if (!opted) {
+		return;
+	}
+	// Windows not read back for this many frames stop being prefetched.
+	constexpr uint64_t StaleFrames = 300;
+	for (auto it = m_readback_windows.begin(); it != m_readback_windows.end();) {
+		const auto base   = it->first;
+		const auto window = it->second;
+		if (window.gc_tick + StaleFrames < m_gc_tick) {
+			it = m_readback_windows.erase(it);
+			continue;
+		}
+		++it;
+		// Look the buffer up without FindBuffer, which would create one.
+		const auto* owner = m_page_table.Find(window.vaddr >> PageTable::kPageBits);
+		if (owner == nullptr || IsBufferInvalid(*owner) ||
+		    !m_slot_buffers[*owner].IsInBounds(window.vaddr, 1)) {
+			continue;
+		}
+		auto&      buffer = m_slot_buffers[*owner];
+		const auto start  = std::max(base, buffer.CpuAddress());
+		const auto end    = std::min(start + DownloadWindowSize, buffer.CpuAddress() + buffer.Size());
+		if (start >= end || !HasGpuDirtyBytes(start, end - start) ||
+		    !DownloadBufferMemory<true>(buffer, start, end - start)) {
+			continue;
+		}
+		m_prefetch_tick = m_scheduler.CurrentTick();
+		// Unprotect once published, unless the GPU wrote the window again meanwhile.
+		m_scheduler.DeferOperation([this, start, size = end - start] {
+			if (!HasGpuDirtyBytes(start, size)) {
+				m_memory_tracker.UnmarkRegionAsGpuModified(start, size);
+			}
+		});
+	}
 }
 
 BufferId BufferCache::FindBuffer(uint64_t vaddr, uint64_t size) {
@@ -466,6 +528,7 @@ void BufferCache::UploadCopies(std::span<const BufferUpload> uploads,
 	                       1, &before, 0, nullptr, 0, nullptr);
 	size_t first = 0;
 	for (const auto& upload: uploads) {
+		LiteCheckpoint(native, 0xc0de0000040001dcull);
 		native.copyBuffer(source.first->Handle(), upload.buffer->Handle(),
 		                  static_cast<uint32_t>(upload.end - first), copies.data() + first);
 		first = upload.end;
@@ -663,7 +726,9 @@ void BufferCache::RunGarbageCollector() {
 	}
 
 	const bool     aggressive = m_total_used_memory >= m_critical_gc_memory;
-	const uint64_t age        = std::min<uint64_t>(aggressive ? 80 : 160, tick);
+	// Lite: over budget, buffers idle for 16 frames go too (see TextureCache::RunGarbageCollector).
+	static const bool stock = std::getenv("KYTY_LITE_STOCK_GC") != nullptr; // A/B switch
+	const uint64_t    age   = std::min<uint64_t>(aggressive ? (stock ? 80 : 16) : 160, tick);
 	const size_t   limit      = aggressive ? 64 : 32;
 
 	std::vector<BufferId> dirty_buffers;

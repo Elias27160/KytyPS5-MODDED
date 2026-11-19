@@ -28,6 +28,8 @@ struct GraphicContext {
 	vk::Device                         device                                = nullptr;
 	VmaAllocator                       allocator                             = nullptr;
 	bool                               memory_budget_ext_enabled             = false;
+	bool                               device_fault_enabled                  = false;
+	bool                               checkpoints_enabled                   = false;
 	bool                               compute_subgroup_size_control_enabled = false;
 	bool                               shader_image_int64_atomics_enabled    = false;
 	bool                               attachment_feedback_loop_enabled      = false;
@@ -54,6 +56,11 @@ struct GraphicContext {
 	Common::Mutex                      queue_mutex;
 	uint32_t                           queue_family = static_cast<uint32_t>(-1);
 	vk::Queue                          queue        = nullptr;
+	// Lite: a second queue of the same family for vkQueuePresentKHR. The driver can sleep in a
+	// present to pace frames; on its own queue that no longer holds queue_mutex against the GPU
+	// thread's submits. Equals `queue` (and must use queue_mutex) when the family has one queue.
+	Common::Mutex                      present_queue_mutex;
+	vk::Queue                          present_queue = nullptr;
 
 	[[nodiscard]] const vk::PhysicalDeviceProperties& GetPhysicalDeviceProperties() const {
 		return physical_device_properties;
@@ -108,6 +115,8 @@ struct GraphicContext {
 	[[nodiscard]] bool CreateAllocator();
 	void               DestroyAllocator();
 	void               LogMemoryBudget() const;
+	// Lite: prints VK_EXT_device_fault details after a device loss (KYTY_LITE_DEVICE_FAULT=1).
+	void               LogDeviceFault() const;
 	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
 	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
 	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;

@@ -11,8 +11,15 @@ namespace Common {
 
 [[noreturn]] static void DbgReport(const char* title, std::string_view text, const char* file,
                                    int line) {
-	Log::WriteToConsoleAndLog(fmt::format("--- Build ---\n{}\n{}\n{} in {}:{}\n", KYTY_BUILD_LABEL,
-	                                      title, text, file, line));
+	const auto report = fmt::format("--- Build ---\n{}\n{}\n{} in {}:{}\n", KYTY_BUILD_LABEL, title,
+	                                text, file, line);
+	Log::WriteToConsoleAndLog(report);
+	// Lite: the launcher runs the emulator with logging off, so keep the cause of a crash in the
+	// working directory where the player can find it.
+	if (FILE* crash = std::fopen("kyty_crash.txt", "a"); crash != nullptr) {
+		std::fputs(report.c_str(), crash);
+		std::fclose(crash);
+	}
 	Subsystems::EmergencyShutdownActive();
 	std::fflush(nullptr);
 	std::_Exit(321);

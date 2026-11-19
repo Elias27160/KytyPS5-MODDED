@@ -3,6 +3,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/debugCounters.h"
+#include "common/liteAb.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -21,6 +22,7 @@
 #include <array>
 #include <bit>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -136,6 +138,16 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 		m_critical_gc_memory = static_cast<uint64_t>(
 		    std::max<int64_t>(std::min(budget - 2 * threshold / 10, budget - GiB / 2), 3 * GiB));
 		m_trigger_gc_memory = static_cast<uint64_t>(std::max<int64_t>((budget - threshold) / 2, 0));
+		if (budget <= 8 * GiB && std::getenv("KYTY_LITE_STOCK_GC") == nullptr) { // A/B switch
+			// Lite: up to 8 GiB the formulas above run the GC from 0 bytes and stay "critical" from
+			// 80% of a budget that already keeps 1/8 of the Vulkan budget free. A 6 GB card running a
+			// PS5 game sits above that every frame, so the GC downloaded old render targets (a full
+			// GPU sync each) and evicted textures it re-uploaded later. Measure against the budget
+			// itself: trigger at 85%, pressure at 95%, critical once the headroom is in use.
+			m_trigger_gc_memory  = static_cast<uint64_t>(85 * budget / 100);
+			m_pressure_gc_memory = static_cast<uint64_t>(95 * budget / 100);
+			m_critical_gc_memory = static_cast<uint64_t>(budget + budget / 14);
+		}
 	}
 }
 
@@ -1611,9 +1623,11 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 		native_range.layerCount     = 1;
 	}
 	if (range.aspectMask == vk::ImageAspectFlagBits::eColor) {
+		LiteCheckpoint(command, 0xc0de000006000659ull);
 		command.Handle().clearColorImage(image.backing.image, vk::ImageLayout::eTransferDstOptimal,
 		                                 &clear.color, 1, &native_range);
 	} else {
+		LiteCheckpoint(command, 0xc0de00000600065cull);
 		command.Handle().clearDepthStencilImage(image.backing.image,
 		                                        vk::ImageLayout::eTransferDstOptimal,
 		                                        &clear.depthStencil, 1, &native_range);
@@ -2023,12 +2037,27 @@ void TextureCache::RunGarbageCollector() {
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
 	}
-	if (m_total_used_memory < m_trigger_gc_memory) {
+	// Lite A/B (KYTY_LITE_AB_PERIOD): the "on" half tries thresholds nearer the device budget with
+	// gentler ages, against the current Lite ones, to stop evicting textures a fight still uses.
+	struct Thresholds {
+		uint64_t trigger, pressure, critical;
+	};
+	static const Thresholds relaxed = [this] {
+		const auto budget = m_graphics.GetTotalMemoryBudget();
+		return Thresholds {budget, budget + budget / 12, budget + budget / 9};
+	}();
+	const bool experiment = Common::LiteAbPeriod() > 0 && Common::LiteAbPhaseOn() &&
+	                        m_graphics.GetTotalMemoryBudget() <= 8ull * 1024 * 1024 * 1024;
+	const auto trigger_memory  = experiment ? relaxed.trigger : m_trigger_gc_memory;
+	const auto pressure_memory = experiment ? relaxed.pressure : m_pressure_gc_memory;
+	const auto critical_memory = experiment ? relaxed.critical : m_critical_gc_memory;
+	if (m_total_used_memory < trigger_memory) {
 		return;
 	}
 	const auto collect = [&](bool allow_aggressive) {
-		bool     pressured  = m_total_used_memory >= m_pressure_gc_memory;
-		bool     aggressive = allow_aggressive && m_total_used_memory >= m_critical_gc_memory;
+		bool     pressured  = m_total_used_memory >= pressure_memory;
+		bool     aggressive = allow_aggressive && m_total_used_memory >= critical_memory;
+		static const bool stock = std::getenv("KYTY_LITE_STOCK_GC") != nullptr; // A/B switch
 		uint64_t age        = 16;
 		size_t   deletions  = 10;
 		if (aggressive) {
@@ -2038,11 +2067,31 @@ void TextureCache::RunGarbageCollector() {
 			age       = 80;
 			deletions = 20;
 		}
+		if (!stock) {
+			// Lite: the ages above grow with memory pressure, so the more VRAM is over-committed the
+			// fewer images qualify, and at a few frames per second an image must sit unused for
+			// minutes. Shrink the age instead: anything idle for a few frames is outside the working
+			// set, and freeing it beats letting the driver page device memory to system RAM.
+			age       = aggressive ? 4 : pressured ? 16 : 60;
+			deletions = aggressive ? 100 : pressured ? 30 : 10;
+			if (experiment) {
+				age       = aggressive ? 8 : pressured ? 30 : 60;
+				deletions = aggressive ? 60 : pressured ? 20 : 10;
+			}
+		}
 		age = std::min(age, tick);
 		std::vector<ImageId> candidates;
 		// Deleting depth recursively deletes its stencil association, so finish LRU traversal
 		// first.
 		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) { candidates.push_back(id); });
+		// Lite: free images that need no write-back first. Downloading a GPU-written image waits
+		// for the GPU (its staging ring wraps for large targets), so pressure alone never does it
+		// and critical memory does it for a few images per collection.
+		std::stable_partition(candidates.begin(), candidates.end(), [&](ImageId id) {
+			const auto* image = m_slot_images.try_get(id);
+			return image == nullptr || !image->SafeToDownload();
+		});
+		size_t downloads = aggressive ? 4 : 0;
 		for (const auto id: candidates) {
 			if (deletions == 0) {
 				break;
@@ -2056,25 +2105,31 @@ void TextureCache::RunGarbageCollector() {
 				TouchImage(*owner);
 				continue;
 			}
-			if (owner->SafeToDownload() &&
+			if (stock && owner->SafeToDownload() &&
 			    (!pressured || owner->info.HasStencil() || !DownloadImageMemory(id))) {
 				continue;
+			}
+			if (!stock && owner->SafeToDownload()) {
+				if (downloads == 0 || owner->info.HasStencil() || !DownloadImageMemory(id)) {
+					continue;
+				}
+				--downloads;
 			}
 			--deletions;
 			FreeImage(id);
 			Common::DebugCounters::Add(Common::DebugCounters::Counter::TextureEvictions);
-			if (m_total_used_memory < m_critical_gc_memory && aggressive) {
+			if (m_total_used_memory < critical_memory && aggressive) {
 				deletions >>= 2;
 				aggressive = false;
 			}
-			if (m_total_used_memory < m_pressure_gc_memory && pressured) {
+			if (m_total_used_memory < pressure_memory && pressured) {
 				deletions >>= 1;
 				pressured = false;
 			}
 		}
 	};
 	collect(false);
-	if (m_total_used_memory >= m_critical_gc_memory) {
+	if (m_total_used_memory >= critical_memory) {
 		collect(true);
 	}
 }

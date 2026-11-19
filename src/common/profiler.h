@@ -35,8 +35,8 @@ struct Lifecycle {
 	KYTY_PROFILER_COLOR_OR_DEFAULT_IMPL(default_color __VA_OPT__(, ) __VA_ARGS__, default_color)
 #define KYTY_PROFILER_COLOR_OR_DEFAULT_IMPL(default_color, color, ...) color
 
-#define KYTY_PROFILER_BLOCK(name, ...)                                                             \
-	KYTY_PROFILER_BLOCK_IMPL(__LINE__, name __VA_OPT__(, ) __VA_ARGS__)
+// Lite: profiler zones compile to nothing, so hot paths pay no per-zone check.
+#define KYTY_PROFILER_BLOCK(name, ...) static_cast<void>(0)
 #define KYTY_PROFILER_BLOCK_IMPL(line, name, ...)                                                  \
 	static constexpr tracy::SourceLocationData KYTY_PROFILER_CONCAT(                               \
 	    kyty_profiler_source_location_, line) {name, TracyFunction, TracyFile,                     \

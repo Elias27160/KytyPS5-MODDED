@@ -13,6 +13,7 @@
 #include "inputMappingDialog.h"
 #include "mainDialog.h"
 #include "patchesDialog.h"
+#include "ps5Home.h"
 #include "trophyViewerDialog.h"
 
 #include <QAbstractItemModel>
@@ -229,6 +230,9 @@ ConfigurationListWidget::ConfigurationListWidget(QWidget* parent)
 	m_ui->cfgs_list->sortItems(GAME_NAME_COLUMN, Qt::AscendingOrder);
 	SetupGameGrid(m_ui->cfgs_list, m_ui->cfgs_grid);
 	m_ui->cfgs_grid->setContextMenuPolicy(Qt::CustomContextMenu);
+	// Lite: the console-style home replaces the toolbar, list and grid; it shares their model.
+	m_ps5_home = new Ps5Home(m_ui->cfgs_list, m_ui->game_views);
+	m_ui->game_views->addWidget(m_ps5_home);
 
 	connect(m_ui->refresh_action, &QAction::triggered, this,
 	        &ConfigurationListWidget::ScanGameDirectory);
@@ -285,6 +289,36 @@ ConfigurationListWidget::ConfigurationListWidget(QWidget* parent)
 	});
 	connect(m_ui->grid_size_slider, &QSlider::sliderReleased, this,
 	        &ConfigurationListWidget::WriteSettings);
+
+	for (QWidget* widget: std::initializer_list<QWidget*> {
+	         m_ui->refresh_button, m_ui->global_settings_button, m_ui->input_mapping_button,
+	         m_ui->edit_button, m_ui->delete_button, m_ui->trophy_overview_button,
+	         m_ui->grid_size_slider, m_ui->grid_view_button, m_ui->search_line_edit}) {
+		widget->setVisible(false);
+	}
+	CollapseLayout(layout());
+	m_ui->game_views->setCurrentWidget(m_ps5_home);
+	connect(m_ps5_home, &Ps5Home::RunRequested, this, [this]() {
+		if (auto* item = m_ui->cfgs_list->currentItem(); item != nullptr) {
+			list_itemDoubleClicked(item, GAME_NAME_COLUMN);
+		}
+	});
+	connect(m_ps5_home, &Ps5Home::SettingsRequested, this,
+	        &ConfigurationListWidget::edit_global_settings);
+	connect(m_ps5_home, &Ps5Home::InputRequested, this,
+	        &ConfigurationListWidget::edit_input_mapping);
+	connect(m_ps5_home, &Ps5Home::TrophiesRequested, this, &ConfigurationListWidget::ViewTrophies);
+	connect(m_ps5_home, &Ps5Home::TrophyOverviewRequested, this,
+	        &ConfigurationListWidget::ViewTrophyOverview);
+	connect(m_ps5_home, &Ps5Home::EditRequested, this,
+	        &ConfigurationListWidget::edit_configuration);
+	connect(m_ps5_home, &Ps5Home::OpenFolderRequested, this,
+	        &ConfigurationListWidget::open_game_folder);
+	connect(m_ps5_home, &Ps5Home::RefreshRequested, this,
+	        &ConfigurationListWidget::ScanGameDirectory);
+	connect(m_ps5_home, &Ps5Home::SearchChanged, this,
+	        &ConfigurationListWidget::filter_configurations);
+
 	if (m_compatibility->IsLocal()) {
 		m_compatibility->Load();
 	}
@@ -1228,6 +1262,7 @@ void ConfigurationListWidget::filter_configurations(const QString& text) {
 		                   item->text(GAME_SERIAL_COLUMN).contains(query, Qt::CaseInsensitive);
 		item->setHidden(!match);
 		m_ui->cfgs_grid->setRowHidden(item_index, !match);
+		m_ps5_home->SetRowHidden(item_index, !match);
 
 		if (match && item == m_selected_item) {
 			selection_is_shown = true;

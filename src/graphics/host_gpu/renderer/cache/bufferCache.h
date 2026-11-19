@@ -15,6 +15,7 @@
 #include <map>
 #include <mutex>
 #include <span>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -92,6 +93,10 @@ public:
 	// Queue after the range's state change becomes visible, or a drain could consume it first.
 	void               QueueBdaSync(uint64_t vaddr, uint64_t size);
 	void               RunGarbageCollector();
+	// Lite: downloads the GPU writes in windows the CPU read back recently, into the command
+	// buffer about to be submitted, so a later CPU read finds them published instead of faulting
+	// into a synchronous download. GPU thread, with a command buffer open.
+	void               PrefetchReadbacks();
 
 private:
 	friend struct BufferCacheTestAccess;
@@ -159,6 +164,15 @@ private:
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;
 	uint64_t m_critical_gc_memory = 2ull * 1024 * 1024 * 1024;
 	uint64_t m_gc_tick            = 0;
+	// Lite readback prefetch: download window base -> an address the CPU read back there and the
+	// GC tick (frame) it did; plus the scheduler tick of the newest prefetch download.
+	struct ReadbackWindow {
+		uint64_t vaddr   = 0;
+		uint64_t gc_tick = 0;
+	};
+	static constexpr size_t                      MaxReadbackWindows = 1024;
+	std::unordered_map<uint64_t, ReadbackWindow> m_readback_windows;
+	uint64_t                                     m_prefetch_tick = 0;
 };
 
 } // namespace Libs::Graphics

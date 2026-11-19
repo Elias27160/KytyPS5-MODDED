@@ -76,6 +76,23 @@ template <typename T, typename Enumerator>
 	}
 }
 
+// Lite: device-loss bisection. With VK_NV_device_diagnostic_checkpoints enabled
+// (KYTY_LITE_DEVICE_FAULT), each internal transfer or dispatch records `tag` so the last one the
+// GPU reached is printed after a device loss.
+inline bool g_lite_checkpoints = false;
+
+template <typename Command>
+void LiteCheckpoint(Command& command, uint64_t tag) {
+	if (!g_lite_checkpoints) {
+		return;
+	}
+	if constexpr (requires { command.Handle(); }) {
+		command.Handle().setCheckpointNV(reinterpret_cast<const void*>(tag));
+	} else {
+		command.setCheckpointNV(reinterpret_cast<const void*>(tag));
+	}
+}
+
 } // namespace Libs::Graphics
 
 #endif // EMULATOR_SRC_GRAPHICS_HOST_GPU_VULKANCOMMON_H_

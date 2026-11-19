@@ -508,6 +508,10 @@ void Swapchain::Destroy() {
 		Common::LockGuard queue_lock(graphics.queue_mutex);
 		RequireVulkanSuccess(graphics.queue.waitIdle(), "wait for swapchain queue");
 	}
+	if (graphics.present_queue != graphics.queue) {
+		Common::LockGuard queue_lock(graphics.present_queue_mutex);
+		RequireVulkanSuccess(graphics.present_queue.waitIdle(), "wait for present queue");
+	}
 	if (m_system_overlay != nullptr) {
 		m_system_overlay->ReleaseVulkan();
 	}
@@ -909,9 +913,13 @@ Swapchain::Status Swapchain::Present() {
 	present.waitSemaphoreCount = 1;
 
 	vk::Result result;
-	{
-		Common::LockGuard lock(m_window.graphic_ctx.queue_mutex);
-		result = m_window.graphic_ctx.queue.presentKHR(&present);
+	auto&      graphics = m_window.graphic_ctx;
+	if (graphics.present_queue != graphics.queue) {
+		Common::LockGuard lock(graphics.present_queue_mutex);
+		result = graphics.present_queue.presentKHR(&present);
+	} else {
+		Common::LockGuard lock(graphics.queue_mutex);
+		result = graphics.queue.presentKHR(&present);
 	}
 	switch (result) {
 		case vk::Result::eSuccess: break;

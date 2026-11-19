@@ -29,11 +29,13 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
 #include <limits>
 #include <ranges>
 #include <span>
+#include <string>
 #include <spirv-tools/libspirv.hpp>
 #include <utility>
 #include <vector>
@@ -869,7 +871,9 @@ void PipelineCache::GetGraphicsPrograms(const CommandBuffer& command, DrawRender
 	}
 	uint32_t push_data_cursor = ShaderRecompiler::IR::PushData::GraphicsDrawDwords(
 	    mesh_active, object_primitive_id, last_stage.user_clip_planes);
+	m_last_draw_hash = vertex_params[0].hash;
 	if (pixel_active) {
+		m_last_draw_hash         = pixel_params.hash;
 		const auto& pixel_module = *GetProgram(pixel_params, pixel_info, push_data_cursor);
 		for (const auto& output: pixel_module.info.info.outputs) {
 			if (output.kind == ShaderRecompiler::IR::StageOutputKind::Mrt ||
@@ -888,6 +892,16 @@ const ShaderModule* PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo
                                                      ShaderComputeInputInfo&      input_info) {
 	input_info.host_subgroup_size = m_graphics.SupportsComputeWave64() ? 64u : 32u;
 	const auto        params      = PrepareProgram(regs, input_info);
+	m_last_compute_hash           = params.hash;
+	// Lite: KYTY_LITE_SKIP_SHADERS="hash,hash" skips those compute shaders (crash bisection).
+	static const std::string skipped = [] {
+		const char* value = std::getenv("KYTY_LITE_SKIP_SHADERS");
+		return value != nullptr ? "," + std::string(value) + "," : std::string();
+	}();
+	if (!skipped.empty() &&
+	    skipped.find(fmt::format(",{:016x},", params.hash)) != std::string::npos) {
+		return nullptr;
+	}
 	input_info.lds_storage = input_info.lds_size_dwords * 4u >
 	    m_graphics.GetPhysicalDeviceProperties().limits.maxComputeSharedMemorySize;
 	uint32_t          push_data_cursor = 0;

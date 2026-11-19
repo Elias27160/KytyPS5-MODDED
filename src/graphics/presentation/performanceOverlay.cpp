@@ -3,6 +3,7 @@
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/hostStats.h"
+#include "common/liteAb.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "imgui.h"
 #include "kernel/memory.h"
@@ -14,6 +15,7 @@
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -508,6 +510,56 @@ void Refresh(Snapshot& shown, const GraphicContext& graphics, Clock::time_point 
 	}
 }
 
+// Lite: KYTY_LITE_BENCH=<file> appends one CSV row per overlay refresh, so builds can be compared
+// on the same scene without reading the overlay by eye.
+void WriteBenchRow(const Snapshot& shown) {
+	static FILE* file = [] {
+		const char* path = std::getenv("KYTY_LITE_BENCH");
+		FILE*       f    = path != nullptr ? std::fopen(path, "w") : nullptr;
+		if (f != nullptr) {
+			std::fputs("fps,frame_ms,max_ms,low_fps,gpu_mem_mb,budget_mb,tex_up_mbs,buf_up_mbs,"
+			           "tex_evict_s,buf_evict_s,gpu_wait_ms_s,guest_gpu_ms_f,compile_ms_f,present_ms_f,"
+			           "draws_f,dispatches_f,submits_s,faults_s,readback_ms_s,shaders,pipelines,gpu_pct,"
+			           "cpu_pct,proc_mem_mb,guest_w,guest_h,ab,threads\n",
+			           f);
+		}
+		return f;
+	}();
+	if (file == nullptr || shown.frame_count == 0) {
+		return;
+	}
+	constexpr double MIB    = 1024.0 * 1024.0;
+	const double     frames = shown.frame_count;
+	const auto       ms     = [&](Counter counter) {
+        return static_cast<double>(shown.deltas[static_cast<size_t>(counter)]) / 1e6;
+	};
+	std::string threads;
+	for (const auto& thread: shown.host.busiest_threads) {
+		threads += Fmt("%s:%.0f;", thread.name.c_str(), thread.cpu_percent);
+	}
+	std::fprintf(
+	    file,
+	    "%.1f,%.1f,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.0f,%.0f,%.0f,%.2f,%.2f,%.2f,%.0f,%.0f,%.0f,%.0f,%.0f,"
+	    "%llu,%llu,%.0f,%.0f,%.0f,%u,%u,%d,%s\n",
+	    shown.fps, shown.frame_ms, shown.max_frame_ms, shown.low_fps,
+	    static_cast<double>(shown.device_memory.value_or(0)) / MIB,
+	    static_cast<double>(shown.device_budget) / MIB, Rate(shown, Counter::TextureUploadBytes) / MIB,
+	    Rate(shown, Counter::BufferUploadBytes) / MIB, Rate(shown, Counter::TextureEvictions),
+	    Rate(shown, Counter::BufferEvictions), Rate(shown, Counter::GpuWaitNs) / 1e6,
+	    ms(Counter::GpuThreadBusyNs) / frames,
+	    (ms(Counter::ShaderCompileNs) + ms(Counter::PipelineCreateNs)) / frames,
+	    ms(Counter::PresentNs) / frames, Rate(shown, Counter::Draws) / std::max(shown.fps, 1.0),
+	    Rate(shown, Counter::Dispatches) / std::max(shown.fps, 1.0),
+	    Rate(shown, Counter::QueueSubmits), Rate(shown, Counter::GpuFaults),
+	    Rate(shown, Counter::ColorMetadataReadbackNs) / 1e6,
+	    static_cast<unsigned long long>(Total(shown, Counter::ShadersCompiled)),
+	    static_cast<unsigned long long>(Total(shown, Counter::PipelinesCreated)),
+	    shown.host.gpu_percent.value_or(-1.0), shown.host.process_cpu_percent.value_or(-1.0),
+	    static_cast<double>(shown.host.process_memory.value_or(0)) / MIB, shown.guest_width, shown.guest_height,
+	    Common::LiteAbPhaseOn() ? 1 : 0, threads.c_str());
+	std::fflush(file);
+}
+
 void DrawCompact(const Snapshot& shown) {
 	if (!ImGui::BeginTable("##performance", 2, TABLE_FLAGS)) {
 		return;
@@ -838,6 +890,7 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 			shown.low_fps = *percentile > 0.0f ? 1000.0 / *percentile : 0.0;
 		}
 		Refresh(shown, graphics, now, generation);
+		WriteBenchRow(shown);
 	}
 
 	const float scale = std::clamp(std::min(static_cast<float>(extent.width) / 1920.0f,

@@ -25,7 +25,9 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <fmt/format.h>
@@ -410,6 +412,11 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	       image_atomic_int64, conditional_rendering, barycentric, compute_derivatives,
 	       acceleration_structure, ray_query, cooperative_matrix, float8] = supported;
 	graphics.memory_budget_ext_enabled = add(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+	graphics.device_fault_enabled =
+	    std::getenv("KYTY_LITE_DEVICE_FAULT") != nullptr && add(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+	graphics.checkpoints_enabled = graphics.device_fault_enabled &&
+	                               add(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+	g_lite_checkpoints = graphics.checkpoints_enabled;
 	add(VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
 	const bool extended_dynamic_state = add(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
 	if (!add(VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME)) {
@@ -628,9 +635,13 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	     robustness2.robustImageAccess2 == VK_TRUE ? "true" : "false",
 	     graphics.robust_buffer_access_enabled ? "robustBufferAccess2" : "shader checks");
 
-	const float                     queue_priority = 1.0f;
-	const vk::DeviceQueueCreateInfo queue_create_info {
-	    .queueFamilyIndex = queue_family, .queueCount = 1, .pQueuePriorities = &queue_priority};
+	// Lite: a second queue presents when the family has one (see GraphicContext::present_queue).
+	const std::array<float, 2> queue_priorities {1.0f, 1.0f};
+	std::vector<vk::QueueFamilyProperties> families = physical_device.getQueueFamilyProperties();
+	const uint32_t queue_count = queue_family < families.size() && families[queue_family].queueCount >= 2 ? 2u : 1u;
+	const vk::DeviceQueueCreateInfo queue_create_info {.queueFamilyIndex = queue_family,
+	                                                   .queueCount       = queue_count,
+	                                                   .pQueuePriorities = queue_priorities.data()};
 	const auto                 extension_count = static_cast<uint32_t>(device_extensions.size());
 	const vk::DeviceCreateInfo create_info {.queueCreateInfoCount    = 1,
 	                                        .pQueueCreateInfos       = &queue_create_info,
@@ -656,7 +667,9 @@ static vk::Device VulkanCreateDevice(GraphicContext&          graphics,
 	    // The renderer only uses the Vulkan 1.3 core dynamic states, but RADV (Mesa 26.3) creates
 	    // its PS epilog cache only when this EXT feature is enabled and crashes in vkCmdDraw when
 	    // a depth- or stencil-writing fragment shader needs an epilog.
-	    vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT {.extendedDynamicState = VK_TRUE}};
+	    vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT {.extendedDynamicState = VK_TRUE},
+	    vk::PhysicalDeviceFaultFeaturesEXT {.deviceFault = VK_TRUE}};
+	if (!graphics.device_fault_enabled) create.unlink<vk::PhysicalDeviceFaultFeaturesEXT>();
 	if (!workgroup_layout.workgroupMemoryExplicitLayout) {
 		create.unlink<vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR>();
 	}
@@ -1008,6 +1021,13 @@ void WindowContext::CreateVulkan() {
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(graphic_ctx.device);
 	graphic_ctx.device.getQueue(graphic_ctx.queue_family, 0, &graphic_ctx.queue);
 	EXIT_IF(graphic_ctx.queue == nullptr);
+	{
+		const auto families = graphic_ctx.physical_device.getQueueFamilyProperties();
+		const bool second   = families[graphic_ctx.queue_family].queueCount >= 2;
+		graphic_ctx.present_queue = second ? graphic_ctx.device.getQueue(graphic_ctx.queue_family, 1)
+		                                   : graphic_ctx.queue;
+		LOGF("Vulkan present queue: %s\n", second ? "dedicated" : "shared");
+	}
 	Dlss::Init(graphic_ctx, VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr,
 	           VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr);
 	Fsr::Init(graphic_ctx, VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr);
@@ -1054,8 +1074,9 @@ WindowContext::~WindowContext() {
 		RequireVulkanSuccess(graphic_ctx.device.waitIdle(), "wait for Vulkan device shutdown");
 		graphic_ctx.DestroyAllocator();
 		graphic_ctx.device.destroy(nullptr);
-		graphic_ctx.device = nullptr;
-		graphic_ctx.queue  = nullptr;
+		graphic_ctx.device        = nullptr;
+		graphic_ctx.queue         = nullptr;
+		graphic_ctx.present_queue = nullptr;
 	}
 	if (surface != nullptr) {
 		graphic_ctx.instance.destroySurfaceKHR(surface, nullptr);

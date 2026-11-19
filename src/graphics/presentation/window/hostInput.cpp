@@ -11,11 +11,15 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace Libs::Graphics {
 
@@ -991,7 +995,52 @@ void HostInputToggleMouseToJoystick() {
 	LOGF("Mouse to right stick: enabled (F7 to release)\n");
 }
 
+// Lite: KYTY_LITE_INPUT=<file> replays "<key name> [hold ms]" lines appended to the file, so a
+// benchmark script can reach the same in-game scene without keyboard focus.
+static bool PollScriptedInput() {
+	static const char* path = std::getenv("KYTY_LITE_INPUT");
+	if (path == nullptr) {
+		return false;
+	}
+	static long                                          consumed = 0;
+	static std::vector<std::pair<uint64_t, SDL_Keycode>> releases;
+	const auto                                           now = SDL_GetTicks();
+	std::erase_if(releases, [&](const auto& release) {
+		if (now < release.first) {
+			return false;
+		}
+		HostInputKey(static_cast<int>(release.second), false);
+		return true;
+	});
+	if (FILE* file = std::fopen(path, "rb"); file != nullptr) {
+		std::fseek(file, consumed, SEEK_SET);
+		char line[64];
+		while (std::fgets(line, sizeof(line), file) != nullptr) {
+			const size_t length = std::strlen(line);
+			if (line[length - 1] != '\n') {
+				break; // The writer has not finished this line.
+			}
+			consumed += static_cast<long>(length);
+			char     name[32] = {};
+			unsigned hold_ms  = 150;
+			if (std::sscanf(line, "%31s %u", name, &hold_ms) < 1) {
+				continue;
+			}
+			const SDL_Keycode key = SDL_GetKeyFromName(name);
+			if (key != SDLK_UNKNOWN) {
+				HostInputKey(static_cast<int>(key), true);
+				releases.emplace_back(now + hold_ms, key);
+			}
+		}
+		std::fclose(file);
+	}
+	return true;
+}
+
 bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms) {
+	if (PollScriptedInput()) {
+		max_wait_ms = std::min(max_wait_ms, 20);
+	}
 	int timeout = -1;
 	if (!g_mouse.enabled || SDL_GetKeyboardFocus() != g_mouse_window) {
 		g_mouse.next_poll = 0;

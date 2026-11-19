@@ -32,6 +32,8 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <limits>
 #include <span>
@@ -132,6 +134,19 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	}
 	buffer_offset = static_cast<uint32_t>(adjustment);
 	const vk::DescriptorBufferInfo result {buffer->Handle(), aligned_offset, size + adjustment};
+	// Lite: KYTY_LITE_TRACE_SHADER=<hash> prints the storage buffers bound for that compute shader.
+	static const char* trace = std::getenv("KYTY_LITE_TRACE_SHADER");
+	if (trace != nullptr &&
+	    std::strtoull(trace, nullptr, 16) == context.GetPipelineCache().LastComputeHash()) {
+		std::printf("trace storage: guest 0x%016llx size 0x%llx written %d -> host buffer guest 0x%016llx "
+		            "size 0x%llx offset 0x%llx range 0x%llx\n",
+		            static_cast<unsigned long long>(address), static_cast<unsigned long long>(size),
+		            static_cast<int>(resource.written),
+		            static_cast<unsigned long long>(buffer->CpuAddress()),
+		            static_cast<unsigned long long>(buffer->Size()),
+		            static_cast<unsigned long long>(aligned_offset),
+		            static_cast<unsigned long long>(size + adjustment));
+	}
 	if (resource.written) {
 		context.GetTextureCache().InvalidateMemoryFromGPU(address, size);
 	}

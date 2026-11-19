@@ -481,7 +481,15 @@ void RenderExecutor::DispatchDirect(CommandBuffer& buffer, uint32_t thread_group
 			}
 		}
 	} else {
+		if (m_context.GetGraphics().checkpoints_enabled) {
+			vk_buffer.setCheckpointNV(
+			    reinterpret_cast<const void*>(m_context.GetPipelineCache().LastComputeHash()));
+		}
 		vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
+		if (m_context.GetGraphics().checkpoints_enabled) {
+			vk_buffer.setCheckpointNV(
+			    reinterpret_cast<const void*>(m_context.GetPipelineCache().LastComputeHash() | 1u));
+		}
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Dispatches);
 
@@ -540,7 +548,15 @@ void RenderExecutor::DispatchIndirect(CommandBuffer& buffer, uint64_t args_addr,
 		ShaderWriteHazardBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	}
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	if (m_context.GetGraphics().checkpoints_enabled) {
+		vk_buffer.setCheckpointNV(
+		    reinterpret_cast<const void*>(m_context.GetPipelineCache().LastComputeHash()));
+	}
 	vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
+	if (m_context.GetGraphics().checkpoints_enabled) {
+		vk_buffer.setCheckpointNV(
+		    reinterpret_cast<const void*>(m_context.GetPipelineCache().LastComputeHash() | 1u));
+	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Dispatches);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ResetBindings();

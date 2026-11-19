@@ -128,6 +128,20 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
     );
 	sampler_info.anisotropyEnable        = (aniso ? VK_TRUE : VK_FALSE);
 	sampler_info.maxAnisotropy           = aniso_ratio;
+	if (aniso) {
+		// Lite: games ask for anisotropic filtering on scene material textures only, never on
+		// lookup tables or depth pyramids, so only those samplers drop to bilinear and lower mips.
+		// Smaller cards get a larger bias: fewer texels fetched, less bandwidth.
+		constexpr uint64_t GiB    = 1024ull * 1024 * 1024;
+		const uint64_t     budget = m_graphics.GetTotalMemoryBudget();
+		const float        bias   = budget <= 4 * GiB   ? 3.0f
+		                            : budget <= 6 * GiB ? 2.0f
+		                            : budget <= 8 * GiB ? 1.5f
+		                                                : 1.0f;
+		sampler_info.anisotropyEnable = VK_FALSE;
+		sampler_info.maxAnisotropy    = 1.0f;
+		sampler_info.mipLodBias       = std::min(sampler_info.mipLodBias + bias, max_lod_bias);
+	}
 	sampler_info.compareEnable           = (r.DepthCompareFunc() != 0 ? VK_TRUE : VK_FALSE);
 	sampler_info.compareOp               = static_cast<vk::CompareOp>(r.DepthCompareFunc());
 	sampler_info.minLod                  = min_lod;

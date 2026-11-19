@@ -13,6 +13,7 @@
 class ConfigurationItem;
 class CompatibilityDatabase;
 class ControllerPreview;
+class Ps5Home;
 class QEvent;
 class QTreeWidgetItem;
 
@@ -92,6 +93,7 @@ private:
 	QMap<QString, Configuration*> m_custom_infos;
 	CompatibilityDatabase*        m_compatibility = nullptr;
 	ControllerPreview*            m_controller_preview = nullptr;
+	Ps5Home*                      m_ps5_home           = nullptr;
 };
 
 #endif // CONFIGURATION_LIST_WIDGET_H

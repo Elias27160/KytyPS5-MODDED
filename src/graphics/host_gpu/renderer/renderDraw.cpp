@@ -37,6 +37,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -470,6 +471,31 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		const auto extent       = target.Extent();
 		state.width             = std::min(state.width, extent.width);
 		state.height            = std::min(state.height, extent.height);
+		// Lite: a cache image found for this target can be smaller than the guest target (memory
+		// the game reuses for surfaces of another size). Rendering past the view's real extent
+		// writes outside the image and loses the device, so keep the render area inside it.
+		const auto view_width  = std::max(image.backing.extent.width >> view.base_level, 1u);
+		const auto view_height = std::max(image.backing.extent.height >> view.base_level, 1u);
+		if (view_width < extent.width || view_height < extent.height) {
+			static std::atomic<uint32_t> clamped {0};
+			if (clamped.fetch_add(1, std::memory_order_relaxed) < 8) {
+				std::printf("render area clamped: guest %ux%u, cache image view %ux%u\n", extent.width,
+				            extent.height, view_width, view_height);
+			}
+		}
+		state.width  = std::min(state.width, view_width);
+		state.height = std::min(state.height, view_height);
+		static const char* trace = std::getenv("KYTY_LITE_TRACE_DRAW");
+		if (trace != nullptr && (std::strtoull(trace, nullptr, 16) & ~uint64_t {3}) ==
+		                            (m_context.GetPipelineCache().LastDrawHash() & ~uint64_t {3})) {
+			std::printf("trace draw color %u: guest 0x%016llx guest %ux%u mip %u -> host %ux%ux%u mips %u "
+			            "layers %u view level %u+%u layer %u+%u format %d\n",
+			            i, static_cast<unsigned long long>(target.desc.info.data.address), extent.width,
+			            extent.height, target.guest_mip_level, image.backing.extent.width,
+			            image.backing.extent.height, image.backing.extent.depth, image.backing.mip_levels,
+			            image.backing.layers, view.base_level, view.level_count, view.base_layer,
+			            view.layer_count, static_cast<int>(image.backing.format));
+		}
 		state.num_layers        = std::min(state.num_layers, view.layer_count);
 		state.num_color_attachments = std::max(state.num_color_attachments, target.target_slot + 1);
 		auto& attachment            = state.color_attachments[target.target_slot];
@@ -532,6 +558,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		              buffer.Handle());
 		state.width               = std::min(state.width, depth.desc.info.extent.width);
 		state.height              = std::min(state.height, depth.desc.info.extent.height);
+		// Lite: same bound as the color targets above.
+		state.width  = std::min(state.width, std::max(image.backing.extent.width >> view.base_level, 1u));
+		state.height = std::min(state.height, std::max(image.backing.extent.height >> view.base_level, 1u));
 		state.num_layers          = std::min(state.num_layers, view.layer_count);
 		const auto aspects        = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
 		auto&      attachment     = state.depth_stencil_attachment;
@@ -1030,6 +1059,7 @@ bool RenderExecutor::CopyDepthToColor(CommandBuffer& buffer, const DrawCallInfo&
 		               {}, command);
 		destination.Transit(vk::ImageLayout::eTransferDstOptimal,
 		                    vk::AccessFlagBits2::eTransferWrite, {}, command);
+		LiteCheckpoint(command, 0xc0de00000900041dull);
 		command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal,
 		                  destination.backing.image, vk::ImageLayout::eTransferDstOptimal,
 		                  1, &region);
@@ -1219,6 +1249,11 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	auto&         occlusion_queries = m_context.GetOcclusionQueries();
 	const int32_t occlusion_query   = occlusion_queries.Begin(vk_buffer);
+	if (m_context.GetGraphics().checkpoints_enabled) {
+		// Low bit 2 tags draws; compute markers carry their hash (bit 0 set after the dispatch).
+		vk_buffer.setCheckpointNV(reinterpret_cast<const void*>(
+		    (m_context.GetPipelineCache().LastDrawHash() & ~uint64_t {3}) | 2u));
+	}
 	if (mesh_task) {
 		vk_buffer.drawMeshTasksEXT(emit.indirect.count, 1, 1);
 	} else if (mesh_active) {

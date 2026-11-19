@@ -7,6 +7,7 @@
 #include "controllerPreview.h"
 #include "gameContent.h"
 #include "titleSound.h"
+#include "ps5Home.h"
 #include "updateChecker.h"
 
 #include <QApplication>
@@ -136,6 +137,19 @@ void MainDialogPrivate::Setup(MainDialog* main_dialog) {
 
 	main_dialog->setWindowFlags(Qt::Dialog | Qt::WindowMinMaxButtonsHint |
 	                            Qt::WindowCloseButtonHint);
+
+	// Lite: dark full-bleed home screen, no settings strip under it.
+	ApplyTheme(1);
+	for (QWidget* widget: std::initializer_list<QWidget*> {
+	         m_ui->label_settings_file, m_ui->label_Interpreter, m_ui->label_Version,
+	         m_ui->check_updates_link, m_ui->check_updates_on_startup, m_ui->close_terminal,
+	         m_ui->label_theme, m_ui->theme_combo}) {
+		widget->setVisible(false);
+	}
+	CollapseLayout(main_dialog->layout());
+	main_dialog->setWindowTitle(QStringLiteral("KytyPS5 Lite"));
+	main_dialog->setMinimumSize(960, 540);
+	main_dialog->setWindowState(Qt::WindowMaximized); // full screen like the console home
 
 	connect(main_dialog, &MainDialog::Start, this, &MainDialogPrivate::FindInterpreter,
 	        Qt::QueuedConnection);

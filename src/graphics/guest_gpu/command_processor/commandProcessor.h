@@ -117,6 +117,11 @@ public:
 
 	[[nodiscard]] bool IsAsyncComputeQueue() const { return m_interrupt_event_id >= 0x20; }
 
+	// Lite: a register table in guest memory, or a copy of it read from the backing when its
+	// pages are GPU-modified but none of its bytes are, so the read neither faults nor waits for
+	// a GPU download of bytes it does not use.
+	const uint32_t* ReadGuestTable(const uint32_t* table, size_t dwords, std::vector<uint32_t>& copy);
+
 private:
 	void ProcessPm4(Pm4Execution& execution);
 	void SuspendPm4();

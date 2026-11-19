@@ -988,10 +988,14 @@ KYTY_CP_OP_PARSER(CpOpIndirectCxRegs) {
 
 	EXIT_NOT_IMPLEMENTED(KYTY_PM4_LEN(cmd_id) != 5u);
 
-	auto* indirect_buffer =
-	    reinterpret_cast<uint32_t*>((static_cast<uint64_t>(buffer[0]) & 0xfffffffcu) |
-	                                (static_cast<uint64_t>(buffer[1]) << 32u));
+	const auto* indirect_buffer =
+	    reinterpret_cast<const uint32_t*>((static_cast<uint64_t>(buffer[0]) & 0xfffffffcu) |
+	                                      (static_cast<uint64_t>(buffer[1]) << 32u));
 	uint32_t indirect_num_dw = buffer[3] & 0x3fffu;
+	thread_local std::vector<uint32_t> table_copy;
+	if (indirect_buffer != nullptr && indirect_num_dw != 0) {
+		indirect_buffer = cp.ReadGuestTable(indirect_buffer, size_t {indirect_num_dw} * 2u, table_copy);
+	}
 
 	if (indirect_num_dw == 0) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
@@ -1057,10 +1061,14 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 
 	EXIT_NOT_IMPLEMENTED(KYTY_PM4_LEN(cmd_id) != 5u);
 
-	auto* indirect_buffer =
-	    reinterpret_cast<uint32_t*>((static_cast<uint64_t>(buffer[0]) & 0xfffffffcu) |
-	                                (static_cast<uint64_t>(buffer[1]) << 32u));
+	const auto* indirect_buffer =
+	    reinterpret_cast<const uint32_t*>((static_cast<uint64_t>(buffer[0]) & 0xfffffffcu) |
+	                                      (static_cast<uint64_t>(buffer[1]) << 32u));
 	uint32_t indirect_num_dw = buffer[3] & 0x3fffu;
+	thread_local std::vector<uint32_t> table_copy;
+	if (indirect_buffer != nullptr && indirect_num_dw != 0) {
+		indirect_buffer = cp.ReadGuestTable(indirect_buffer, size_t {indirect_num_dw} * 2u, table_copy);
+	}
 
 	if (indirect_num_dw == 0) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
@@ -1110,10 +1118,14 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 
 	EXIT_NOT_IMPLEMENTED(KYTY_PM4_LEN(cmd_id) != 5u);
 
-	auto* indirect_buffer =
-	    reinterpret_cast<uint32_t*>((static_cast<uint64_t>(buffer[0]) & 0xfffffffcu) |
-	                                (static_cast<uint64_t>(buffer[1]) << 32u));
+	const auto* indirect_buffer =
+	    reinterpret_cast<const uint32_t*>((static_cast<uint64_t>(buffer[0]) & 0xfffffffcu) |
+	                                      (static_cast<uint64_t>(buffer[1]) << 32u));
 	uint32_t indirect_num_dw = buffer[3] & 0x3fffu;
+	thread_local std::vector<uint32_t> table_copy;
+	if (indirect_buffer != nullptr && indirect_num_dw != 0) {
+		indirect_buffer = cp.ReadGuestTable(indirect_buffer, size_t {indirect_num_dw} * 2u, table_copy);
+	}
 
 	if (indirect_num_dw == 0) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;

@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
+#include "common/liteAb.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
@@ -218,12 +219,27 @@ void CommandProcessor::ApplyContextStateOperation(ContextStateOperation operatio
 	}
 }
 
+const uint32_t* CommandProcessor::ReadGuestTable(const uint32_t* table, size_t dwords,
+                                                 std::vector<uint32_t>& copy) {
+	const auto vaddr   = reinterpret_cast<uint64_t>(table);
+	const auto size    = dwords * sizeof(uint32_t);
+	auto&      buffers = m_renderer.GetBufferCache();
+	if (!GuestRange {vaddr, size}.Valid() || !buffers.IsRegionGpuModified(vaddr, size) ||
+	    buffers.HasGpuDirtyBytes(vaddr, size)) {
+		return table;
+	}
+	copy.resize(dwords);
+	return LibKernel::Memory::TryReadBacking(vaddr, copy.data(), size) ? copy.data() : table;
+}
+
 void CommandProcessor::BufferInit() {
 	m_draws = 0;
 	GetScheduler().Begin(m_ctx, m_ucfg, m_sh_ctx);
 }
 
 void CommandProcessor::BufferFlush() {
+	// Lite: this submission carries the early downloads of windows the CPU reads back.
+	m_renderer.GetBufferCache().PrefetchReadbacks();
 	GetScheduler().Flush();
 	// The occlusion counters reach a guest that polls them without waiting for a later fence.
 	m_renderer.GetOcclusionQueries().Publish();
@@ -406,6 +422,7 @@ void GuestGpu::ThreadRun(void* data) {
 	auto* gpu = static_cast<GuestGpu*>(data);
 	EXIT_IF(gpu == nullptr);
 	KYTY_PROFILER_THREAD("Thread_Gpu");
+	Common::LiteApplyCoreReserve(true);
 	g_gpu_state = gpu;
 
 	for (;;) {

@@ -5,6 +5,7 @@
 #include "common/emulatorConfig.h"
 #include "common/fpEnv.h"
 #include "common/hostException.h"
+#include "common/liteAb.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
 #include "common/stringUtils.h"
@@ -28,6 +29,7 @@
 #include <new>
 #include <thread>
 #include <utility>
+#include <cstdlib>
 #include <vector>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -63,6 +65,58 @@
 #ifdef pthread_attr_getguardsize
 #undef pthread_attr_getguardsize
 #endif
+
+namespace Common {
+
+void LiteApplyCoreReserve(bool gpu) {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	struct Masks {
+		DWORD_PTR gpu   = 0; // 0: no reserve
+		DWORD_PTR guest = 0;
+	};
+	static const Masks masks = [] {
+		Masks result;
+		if (std::getenv("KYTY_LITE_CORE_RESERVE") == nullptr) {
+			return result;
+		}
+		DWORD length = 0;
+		GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &length);
+		std::vector<uint8_t> buffer(length);
+		if (length == 0 ||
+		    !GetLogicalProcessorInformationEx(
+		        RelationProcessorCore,
+		        reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data()), &length)) {
+			return result;
+		}
+		std::vector<DWORD_PTR> cores;
+		for (DWORD offset = 0; offset < length;) {
+			const auto* entry =
+			    reinterpret_cast<const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data() + offset);
+			if (entry->Relationship == RelationProcessorCore && entry->Processor.GroupMask[0].Group == 0) {
+				cores.push_back(entry->Processor.GroupMask[0].Mask);
+			}
+			offset += entry->Size;
+		}
+		if (cores.size() < 4) {
+			return result; // too few cores to give one away
+		}
+		DWORD_PTR all = 0;
+		for (const auto mask: cores) {
+			all |= mask;
+		}
+		result.gpu   = cores.back();
+		result.guest = all & ~result.gpu;
+		return result;
+	}();
+	if (masks.gpu != 0) {
+		SetThreadAffinityMask(GetCurrentThread(), gpu ? masks.gpu : masks.guest);
+	}
+#else
+	static_cast<void>(gpu);
+#endif
+}
+
+} // namespace Common
 
 namespace Libs {
 
@@ -3213,6 +3267,14 @@ static void* RunThread(void* arg) {
 	os_thread_id = GetHostThreadId();
 #endif
 	thread->host_thread_id = os_thread_id;
+	Common::LiteApplyCoreReserve(false);
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	// Lite: named threads show up in the overlay's busiest-thread list and in profilers.
+	if (!thread->name.empty()) {
+		std::wstring name(thread->name.begin(), thread->name.end());
+		SetThreadDescription(GetCurrentThread(), name.c_str());
+	}
+#endif
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 	if (!thread->name.empty()) {
 #if defined(__APPLE__)

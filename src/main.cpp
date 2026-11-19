@@ -460,6 +460,28 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 	return show_help || (!options.app0_dir.empty() && !options.elf.empty());
 }
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <timeapi.h>
+#pragma comment(lib, "winmm.lib")
+
+// Lite: stay ahead of background apps, opt out of Windows 11 EcoQoS throttling, and use 1 ms
+// timer resolution so vblank and frame-pacing sleeps wake on time.
+static void PrioritizeEmulatorProcess() {
+	SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+	PROCESS_POWER_THROTTLING_STATE throttling {};
+	throttling.Version     = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+	throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+	throttling.StateMask   = 0;
+	SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling,
+	                      sizeof(throttling));
+	timeBeginPeriod(1);
+}
+#endif
+
 static int Main(int argc, char* argv[]) {
 	InitializeThreads();
 
@@ -481,6 +503,9 @@ static int Main(int argc, char* argv[]) {
 		return 0;
 	}
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	PrioritizeEmulatorProcess();
+#endif
 	Run(options);
 
 	return 0;

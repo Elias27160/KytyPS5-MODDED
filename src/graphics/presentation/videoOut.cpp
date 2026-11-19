@@ -28,6 +28,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <list>
 #include <thread>
@@ -1732,9 +1733,14 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 	Loader::SystemContentParamSfoGetInt("ATTRIBUTE", &attribute);
 	Loader::SystemContentParamSfoGetInt("ATTRIBUTE3", &attribute3);
 	ctx->mutex.Lock();
-	// Primary output reports 4K unless param.json Video-out Info enables resolution detection.
+	// Stock: the primary output reports 4K unless param.json Video-out Info enables resolution
+	// detection. Lite: always report 1080p, so games render a quarter of the pixels and need far less
+	// VRAM (UFC 6: main menu ~60 FPS at 3.8 GB instead of seconds-long stalls at 7 GB on a 6 GB
+	// card). KYTY_LITE_4K=1 restores the stock report.
+	static const bool stock_4k = std::getenv("KYTY_LITE_4K") != nullptr;
 	status->resolution =
-	    ((attribute3 & 4) != 0 && driver.width < 3840 && driver.height < 2160 ? 1u : 2u);
+	    (!stock_4k || ((attribute3 & 4) != 0 && driver.width < 3840 && driver.height < 2160) ? 1u
+	                                                                                         : 2u);
 	status->dynamicRange = (attribute & 0x20000000) != 0 && driver.IsHdrSupported() ? 2u : 1u;
 	status->refreshRate =
 	    (ctx->output_mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ || Config::GetVblankFrequency() >= 119
