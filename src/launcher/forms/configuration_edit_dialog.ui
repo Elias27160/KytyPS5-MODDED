@@ -215,6 +215,12 @@
               <property name="text"><string>Native ray tracing (experimental)</string></property>
              </widget>
             </item>
+            <item row="14" column="1">
+             <widget class="QCheckBox" name="checkBox_async_pipelines">
+              <property name="toolTip"><string>Compile new pipelines in the background. Fewer stutters on first visits, but some objects can be missing for a few frames.</string></property>
+              <property name="text"><string>Async pipeline compilation (experimental)</string></property>
+             </widget>
+            </item>
            </layout>
           </widget>
          </item>

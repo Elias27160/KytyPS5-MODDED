@@ -1124,7 +1124,18 @@ void RenderExecutor::ExecutePreparedDraw(CommandBuffer& buffer, const DrawCallIn
 		args_buffer = m_context.GetBufferCache().ObtainBuffer(emit.indirect.address, size, false);
 		EXIT_IF((args_buffer.second & 3u) != 0);
 	}
-	auto& pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(buffer, state, m_targets);
+	// Lite: a draw that writes memory or counts occlusion samples never waits out its pipeline.
+	bool may_defer = !m_context.GetOcclusionQueries().Counting();
+	for (const auto& stage: vertex_stages) {
+		may_defer = may_defer && !HasShaderBufferWrites(stage.stage);
+	}
+	may_defer = may_defer && !(state.ps_active && HasShaderBufferWrites(state.ps_input_info.stage));
+	auto* found_pipeline =
+	    m_context.GetPipelineCache().GetGraphicsPipeline(buffer, state, m_targets, may_defer);
+	if (found_pipeline == nullptr) {
+		return;
+	}
+	auto& pipeline = *found_pipeline;
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering = AcquireRenderTargets(buffer, m_targets.colors, m_targets.color_count,
 	                                            m_targets.depth, feedback_aspects, stages);

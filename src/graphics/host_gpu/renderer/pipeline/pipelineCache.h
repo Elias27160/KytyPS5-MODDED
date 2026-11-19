@@ -17,7 +17,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <deque>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -205,8 +207,9 @@ public:
 	const ShaderModule* GetComputeProgram(const HW::ComputeShaderInfo& regs,
 	                                      ShaderComputeInputInfo&      input_info);
 
-	Pipeline& GetGraphicsPipeline(const CommandBuffer& command, const DrawRenderState& state,
-	                              const DrawTargets& targets);
+	// Null only with `may_defer` and --async-pipelines: the pipeline is still compiling, skip the draw.
+	Pipeline* GetGraphicsPipeline(const CommandBuffer& command, const DrawRenderState& state,
+	                              const DrawTargets& targets, bool may_defer);
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info);
 
 private:
@@ -217,7 +220,8 @@ private:
 		ShaderRecompiler::IR::ResourcePlan           resource_plan;
 		ShaderRecompiler::IR::ResourceSnapshot       resources;
 		ShaderRecompiler::IR::ResourceSpecialization specialization;
-		std::vector<ShaderModule>                    modules;
+		// A deque, so modules never move: background pipeline compiles hold pointers to them.
+		std::deque<ShaderModule>                     modules;
 		bool                                         skip_dispatch = false;
 
 		[[nodiscard]] std::span<const uint32_t> FunctionCode() const;
@@ -258,6 +262,9 @@ private:
 	std::chrono::steady_clock::time_point m_next_driver_cache_save;
 	bool                          m_driver_cache_dirty = false;
 	std::unordered_map<GraphicsPipelineKey, Pipeline, GraphicsPipelineKeyHash> m_graphics_pipelines;
+	// Lite: graphics pipelines the driver is still compiling (--async-pipelines).
+	std::unordered_map<GraphicsPipelineKey, std::future<Pipeline>, GraphicsPipelineKeyHash>
+	                                                                           m_pending_pipelines;
 	std::unordered_map<uint64_t, Pipeline>                                     m_compute_pipelines;
 	std::unordered_map<uint64_t, ShaderTessellationInputInfo>                  m_tess_layouts;
 	// Records everything first created if a shader store is open, and writes the driver cache.

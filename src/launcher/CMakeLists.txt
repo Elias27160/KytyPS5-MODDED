@@ -46,6 +46,14 @@ add_executable(launcher_game_views_tests EXCLUDE_FROM_ALL
 target_link_libraries(launcher_game_views_tests Qt6::Widgets common)
 target_include_directories(launcher_game_views_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 set_target_properties(launcher_game_views_tests PROPERTIES AUTOUIC ON AUTORCC ON)
+# The test runs on the offscreen platform; the build tree only deploys the windowing one.
+if(TARGET Qt6::QOffscreenIntegrationPlugin)
+	add_custom_command(TARGET launcher_game_views_tests POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:launcher_game_views_tests>/platforms
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::QOffscreenIntegrationPlugin>
+			$<TARGET_FILE_DIR:launcher_game_views_tests>/platforms/
+		VERBATIM)
+endif()
 
 if(WIN32 AND NOT KYTY_CLANG_CL)
 	set_target_properties(launcher PROPERTIES LINK_FLAGS "${KYTY_LD_OPTIONS}")

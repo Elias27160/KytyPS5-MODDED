@@ -401,6 +401,10 @@ void CompilationRows(const Snapshot& shown) {
 	    shown.shader_compile_peak_ns);
 	row("Pipeline compile", Counter::PipelinesCreated, Counter::PipelineCreateNs,
 	    shown.pipeline_create_peak_ns);
+	if (const auto deferred = Total(shown, Counter::DeferredDraws); deferred != 0) {
+		Row("Draws deferred (async)", Fmt("%llu", static_cast<unsigned long long>(deferred)),
+		    Rate(shown, Counter::DeferredDraws) > 0.0 ? MEDIUM : GOOD);
+	}
 }
 
 void FrameTimingRows(const Snapshot& shown) {

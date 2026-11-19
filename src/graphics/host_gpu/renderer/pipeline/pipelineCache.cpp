@@ -476,6 +476,11 @@ PipelineCache::PipelineCache(GraphicContext&                         graphics,
 }
 
 PipelineCache::~PipelineCache() {
+	// Background compiles use the driver cache, so they finish before it goes.
+	for (auto& [key, pending]: m_pending_pipelines) {
+		m_graphics_pipelines.emplace(key, pending.get());
+	}
+	m_pending_pipelines.clear();
 	Save();
 	auto destroy = [this](const auto& pipelines) {
 		for (const auto& pipeline: pipelines | std::views::values) {
@@ -889,9 +894,10 @@ const ShaderModule* PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo
 	return GetProgram(params, input_info, push_data_cursor);
 }
 
-PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&   command,
+PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(const CommandBuffer&   command,
                                                             const DrawRenderState& state,
-                                                            const DrawTargets&     targets) {
+                                                            const DrawTargets&     targets,
+                                                            bool                   may_defer) {
 	const auto* colors        = targets.colors;
 	const auto& depth         = targets.depth;
 	const auto  vertex_info   = state.VertexStages();
@@ -1058,29 +1064,48 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(const CommandBuffer&
 		}
 	}
 
-	auto [iter, inserted] = m_graphics_pipelines.try_emplace(key);
-	auto& pipeline        = iter->second;
-	if (!inserted) {
-		return pipeline;
+	if (const auto found = m_graphics_pipelines.find(key); found != m_graphics_pipelines.end()) {
+		return &found->second;
 	}
 
-	if (graphics_debug_dump_enabled()) {
-		ShaderDbgDumpInputInfo(vs_input_info);
-		if (ps_active) {
-			ShaderDbgDumpInputInfo(ps_input_info);
+	auto pending = m_pending_pipelines.find(key);
+	if (pending == m_pending_pipelines.end()) {
+		if (graphics_debug_dump_enabled()) {
+			ShaderDbgDumpInputInfo(vs_input_info);
+			if (ps_active) {
+				ShaderDbgDumpInputInfo(ps_input_info);
+			}
 		}
+		auto create = [this, key, stages] {
+			Common::DebugCounters::ScopedTimer timer(Common::DebugCounters::Counter::PipelinesCreated,
+			                                         Common::DebugCounters::Counter::PipelineCreateNs,
+			                                         Common::DebugCounters::Peak::PipelineCreateNs);
+			Pipeline created;
+			CreatePipelineInternal(m_graphics, created, key, stages, m_driver_cache);
+			return created;
+		};
+		if (!Config::AsyncPipelinesEnabled()) {
+			auto& pipeline = m_graphics_pipelines.emplace(key, create()).first->second;
+			StorePipeline(key);
+			CheckpointDriverCache();
+			return &pipeline;
+		}
+		// Lite: the driver compiles on a pool thread (stage modules never move, see Program::modules).
+		pending = m_pending_pipelines.emplace(key, std::async(std::launch::async, create)).first;
 	}
-
-	{
-		Common::DebugCounters::ScopedTimer timer(Common::DebugCounters::Counter::PipelinesCreated,
-		                                         Common::DebugCounters::Counter::PipelineCreateNs,
-		                                         Common::DebugCounters::Peak::PipelineCreateNs);
-		CreatePipelineInternal(m_graphics, pipeline, key, stages, m_driver_cache);
+	// A pipeline the driver finds in its cache is ready within the budget; a real compile is not,
+	// and its draws are skipped until it is, instead of stalling the command processor.
+	constexpr auto AsyncPipelineBudget = std::chrono::milliseconds(4);
+	if (may_defer && pending->second.wait_for(AsyncPipelineBudget) != std::future_status::ready) {
+		Common::DebugCounters::Add(Common::DebugCounters::Counter::DeferredDraws);
+		return nullptr;
 	}
+	auto& pipeline = m_graphics_pipelines.emplace(key, pending->second.get()).first->second;
+	m_pending_pipelines.erase(pending);
 	StorePipeline(key);
 	CheckpointDriverCache();
 
-	return pipeline;
+	return &pipeline;
 }
 
 PipelineCache::Pipeline& PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info) {

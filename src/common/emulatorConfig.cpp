@@ -241,6 +241,10 @@ bool OcclusionQueriesEnabled() {
 	return g_config->occlusion_queries_enabled;
 }
 
+bool AsyncPipelinesEnabled() {
+	return g_config->async_pipelines;
+}
+
 bool RelaxedShaderFloatEnabled() {
 	return g_config->relaxed_shader_float;
 }

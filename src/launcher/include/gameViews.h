@@ -107,7 +107,8 @@ public:
 		// The stylesheet made the view's own palette transparent, so take the panel from the app's.
 		auto panel      = QGuiApplication::palette().color(QPalette::Window);
 		auto text_color = option.palette.color(QPalette::Text);
-		panel.setAlpha(210);
+		// Nearly opaque: the console-style shading behind darkens a lighter panel past readability.
+		panel.setAlpha(235);
 		painter->save();
 		painter->setRenderHint(QPainter::Antialiasing);
 		painter->setPen(option.state.testFlag(QStyle::State_Selected) ? QPen(text_color)
