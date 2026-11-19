@@ -290,7 +290,9 @@ private:
 
 	// pipelineSerialization.cpp
 	void WarmUp(const std::filesystem::path& path);
-	bool LoadRecord(std::span<const uint8_t>& records);
+	// Applies records in order until a damaged one, advancing `records` past those applied.
+	void LoadRecords(std::span<const uint8_t>& records);
+	bool ApplyRecord(std::span<const uint8_t> raw);
 	void StoreModule(const ProgramKey& key, const Program& program, const ShaderModule& module,
 	                 const std::vector<uint32_t>& spirv);
 	void StorePipeline(const GraphicsPipelineKey& key);

@@ -283,6 +283,11 @@ QPixmap LoadGameArt(const Configuration* game, int height) {
 
 } // namespace
 
+Common::Trophies::Progress TrophyViewerDialog::GetProgress(const Configuration* info,
+                                                           const QString&       runtime_directory) {
+	return GetGameProgress(info, runtime_directory);
+}
+
 void TrophyViewerDialog::ShowOverview(const std::vector<const Configuration*>& games,
                                       const QString& runtime_directory, QWidget* parent) {
 	QDialog dialog(parent);

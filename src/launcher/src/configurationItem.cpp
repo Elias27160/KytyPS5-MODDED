@@ -12,6 +12,7 @@
 #include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
@@ -220,10 +221,26 @@ void ConfigurationItem::Update(bool reload_icon) {
 	}
 
 	if (reload_icon) {
-		const auto icon_data = GameContent::ReadFile(
-		    m_info->basedir, QStringLiteral("sce_sys/icon0.png"), GameContent::MaxImageSize);
-		QPixmap icon;
-		m_icon = !icon_data.isEmpty() && icon.loadFromData(icon_data) ? QIcon(icon) : QIcon {};
+		// Lite: read and decode the cover on a worker, so a scan shows the window without waiting
+		// for every PNG. 256 px covers the largest tile, so paints scale a small image.
+		auto* watcher = new QFutureWatcher<QImage>(this);
+		connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, watcher]() {
+			const auto image = watcher->result();
+			m_icon = image.isNull() ? QIcon {} : QIcon(QPixmap::fromImage(image));
+			UpdateIcon();
+			watcher->deleteLater();
+		});
+		watcher->setFuture(QtConcurrent::run([base = m_info->basedir]() {
+			QImage     image;
+			const auto data = GameContent::ReadFile(base, QStringLiteral("sce_sys/icon0.png"),
+			                                        GameContent::MaxImageSize);
+			if (data.isEmpty() || !image.loadFromData(data)) {
+				return QImage {};
+			}
+			return image.width() > 256 ? image.scaled(256, 256, Qt::KeepAspectRatio,
+			                                          Qt::SmoothTransformation)
+			                           : image;
+		}));
 	}
 	UpdateIcon();
 	UpdateStatusIndicator();

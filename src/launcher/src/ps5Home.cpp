@@ -10,6 +10,7 @@
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QElapsedTimer>
+#include <QGraphicsOpacityEffect>
 #include <QHash>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -23,6 +24,9 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPropertyAnimation>
+#include <QScrollBar>
+#include <QStorageInfo>
 #include <QPushButton>
 #include <QStyledItemDelegate>
 #include <QTime>
@@ -48,21 +52,127 @@ constexpr int TILE_RADIUS  = 10;
 
 const char* const STORE_URL = "https://kytyps5.github.io/";
 
+// The selected game's name sits to the right of its tile, under the smaller neighbours.
+//
+// A selection change plays like the console row: the new tile grows while the old one shrinks and
+// the row glides so the selection keeps its slot (one tile in from the left), then the caption
+// fades in. All of it is one 450 ms animation; the background and hero text follow its timing.
+class TileRow: public QListView {
+public:
+	static constexpr int TransitionMs = 450;
+
+	explicit TileRow(QWidget* parent): QListView(parent) {
+		m_animation.setDuration(TransitionMs);
+		m_animation.setStartValue(0.0);
+		m_animation.setEndValue(1.0);
+		connect(&m_animation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+			m_ms = value.toReal() * TransitionMs;
+			Step();
+		});
+	}
+
+	// Plays the move from `previous` to the current row.
+	void Transition(int previous) {
+		m_previous = previous;
+		m_from     = horizontalScrollBar()->value();
+		if (!isVisible()) {
+			m_animation.stop();
+			m_ms = TransitionMs;
+			Step();
+			return;
+		}
+		m_animation.stop();
+		m_ms = 0;
+		m_animation.start();
+	}
+
+	// Tile edge at this point of the transition.
+	[[nodiscard]] int TileSize(int row) const {
+		const qreal grow = Grow();
+		const int   current = currentIndex().row();
+		if (row == current) {
+			return qRound(TILE_SMALL + (TILE_LARGE - TILE_SMALL) * grow);
+		}
+		if (row == m_previous && grow < 1.0) {
+			return qRound(TILE_LARGE - (TILE_LARGE - TILE_SMALL) * grow);
+		}
+		return TILE_SMALL;
+	}
+
+protected:
+	void paintEvent(QPaintEvent* event) override {
+		QListView::paintEvent(event);
+		const auto current = currentIndex();
+		// The caption waits for the tile to settle, then fades in.
+		const qreal alpha = std::clamp((m_ms - 170.0) / 180.0, 0.0, 1.0);
+		if (!current.isValid() || isRowHidden(current.row()) || alpha <= 0.0) {
+			return;
+		}
+		const QRect tile = visualRect(current);
+		QPainter    painter(viewport());
+		auto        font = this->font();
+		font.setPixelSize(18);
+		painter.setFont(font);
+		painter.setOpacity(alpha);
+		painter.setPen(Qt::white);
+		const QRect caption(tile.left() + TILE_LARGE + 14, tile.top() + TILE_SMALL + 10,
+		                    viewport()->width() - tile.left() - TILE_LARGE - 20, 28);
+		painter.drawText(caption, Qt::AlignLeft | Qt::AlignVCenter,
+		                 QFontMetrics(font).elidedText(current.data().toString(), Qt::ElideRight,
+		                                               caption.width()));
+	}
+
+	void focusInEvent(QFocusEvent* event) override {
+		QListView::focusInEvent(event);
+		viewport()->update();
+	}
+
+	void focusOutEvent(QFocusEvent* event) override {
+		QListView::focusOutEvent(event);
+		viewport()->update();
+	}
+
+private:
+	// The size change takes the first 160 ms, easing out.
+	[[nodiscard]] qreal Grow() const {
+		const qreal t = std::clamp(m_ms / 160.0, 0.0, 1.0);
+		return 1.0 - std::pow(1.0 - t, 3.0);
+	}
+
+	void Step() {
+		doItemsLayout();
+		// Settled layout: every visible tile before the selection is small; keep one of them in view.
+		const int current = currentIndex().row();
+		int       before  = 0;
+		for (int row = 0; row < current; row++) {
+			before += isRowHidden(row) ? 0 : 1;
+		}
+		const int to = std::clamp((before - 1) * (TILE_SMALL + TILE_SPACING), 0,
+		                          std::max(horizontalScrollBar()->maximum(), 0));
+		horizontalScrollBar()->setValue(qRound(m_from + (to - m_from) * Grow()));
+		viewport()->update();
+	}
+
+	QVariantAnimation m_animation;
+	qreal             m_ms       = TransitionMs;
+	int               m_previous = -1;
+	int               m_from     = 0;
+};
+
 // Tiles are top-aligned like the console row: small ones, and a larger outlined selected one.
 class TileDelegate: public QStyledItemDelegate {
 public:
-	explicit TileDelegate(QListView* view): QStyledItemDelegate(view), m_view(view) {}
+	explicit TileDelegate(TileRow* view): QStyledItemDelegate(view), m_view(view) {}
 
 	[[nodiscard]] QSize sizeHint(const QStyleOptionViewItem& /*option*/,
 	                             const QModelIndex& index) const override {
-		const int size = IsCurrent(index) ? TILE_LARGE : TILE_SMALL;
-		return {size + TILE_SPACING, TILE_LARGE};
+		return {m_view->TileSize(index.row()) + TILE_SPACING, TILE_LARGE};
 	}
 
 	void paint(QPainter* painter, const QStyleOptionViewItem& option,
 	           const QModelIndex& index) const override {
 		const bool  current = IsCurrent(index);
-		const int   size    = current ? TILE_LARGE : TILE_SMALL;
+		const int   size    = m_view->TileSize(index.row());
 		const QRect tile(option.rect.x(), option.rect.y(), size, size);
 
 		painter->save();
@@ -94,43 +204,7 @@ private:
 		return index.row() == m_view->currentIndex().row();
 	}
 
-	QListView* m_view;
-};
-
-// The selected game's name sits to the right of its tile, under the smaller neighbours.
-class TileRow: public QListView {
-public:
-	using QListView::QListView;
-
-protected:
-	void paintEvent(QPaintEvent* event) override {
-		QListView::paintEvent(event);
-		const auto current = currentIndex();
-		if (!current.isValid() || isRowHidden(current.row())) {
-			return;
-		}
-		const QRect tile = visualRect(current);
-		QPainter    painter(viewport());
-		auto        font = this->font();
-		font.setPixelSize(18);
-		painter.setFont(font);
-		painter.setPen(Qt::white);
-		const QRect caption(tile.left() + TILE_LARGE + 14, tile.top() + TILE_SMALL + 10,
-		                    viewport()->width() - tile.left() - TILE_LARGE - 20, 28);
-		painter.drawText(caption, Qt::AlignLeft | Qt::AlignVCenter,
-		                 QFontMetrics(font).elidedText(current.data().toString(), Qt::ElideRight,
-		                                               caption.width()));
-	}
-
-	void focusInEvent(QFocusEvent* event) override {
-		QListView::focusInEvent(event);
-		viewport()->update();
-	}
-
-	void focusOutEvent(QFocusEvent* event) override {
-		QListView::focusOutEvent(event);
-		viewport()->update();
-	}
+	TileRow* m_view;
 };
 
 // Draws a white line icon into a square pixmap.
@@ -218,7 +292,11 @@ QFont PixelFont(const QFont& base, int pixels, QFont::Weight weight) {
 // released otherwise, so a running game owns them.
 class GamepadNavigator: public QObject {
 public:
-	explicit GamepadNavigator(QObject* parent): QObject(parent) {
+	// Name and battery (-1 unknown, 101 wired) of the first controller; an empty name for none.
+	using StatusCallback = std::function<void(const QString& name, int battery)>;
+
+	GamepadNavigator(QObject* parent, StatusCallback on_status)
+	    : QObject(parent), m_on_status(std::move(on_status)) {
 		m_clock.start();
 		connect(&m_timer, &QTimer::timeout, this, [this]() { Poll(); });
 		m_timer.start(16);
@@ -316,6 +394,21 @@ private:
 				++it;
 			}
 		}
+		QString name;
+		int     battery = -1;
+		if (!m_gamepads.isEmpty()) {
+			auto*      gamepad = m_gamepads.begin().value();
+			const char* text   = SDL_GetGamepadName(gamepad);
+			name               = text != nullptr ? QString::fromUtf8(text) : tr("Manette");
+			int        percent = -1;
+			const auto state   = SDL_GetGamepadPowerInfo(gamepad, &percent);
+			battery            = state == SDL_POWERSTATE_NO_BATTERY ? 101 : percent;
+		}
+		if (m_on_status && (name != m_status_name || battery != m_status_battery)) {
+			m_status_name    = name;
+			m_status_battery = battery;
+			m_on_status(name, battery);
+		}
 	}
 
 	void Release() {
@@ -379,6 +472,9 @@ private:
 	QHash<SDL_JoystickID, SDL_Gamepad*> m_gamepads;
 	bool                                m_initialized = false;
 	int                                 m_scan_ticks  = 0;
+	StatusCallback                      m_on_status;
+	QString                             m_status_name;
+	int                                 m_status_battery = -2;
 	Repeat                              m_up, m_down, m_left, m_right;
 	bool m_south = false, m_east = false, m_north = false, m_start = false, m_l1 = false, m_r1 = false;
 };
@@ -408,11 +504,19 @@ public:
 		m_caption = caption;
 		m_badge   = badge;
 		m_picture = picture;
+		m_scaled  = QPixmap();
 		update();
 	}
 
 	void SetIcon(const QIcon& icon) {
 		m_icon = icon;
+		update();
+	}
+
+	// A large value under the badge and, with a progress in [0, 1], a bar above the caption.
+	void SetStats(const QString& value, qreal progress = -1.0) {
+		m_value    = value;
+		m_progress = progress;
 		update();
 	}
 
@@ -431,16 +535,37 @@ protected:
 			fill.setColorAt(1, m_bottom);
 			painter.fillRect(area, fill);
 		} else {
-			const auto scaled =
-			    m_picture.scaled(size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-			painter.drawPixmap((width() - scaled.width()) / 2, (height() - scaled.height()) / 2,
-			                   scaled);
+			// Scaled once per picture and size: the background fade repaints the cards every frame.
+			if (m_scaled.isNull() || m_scaled_size != size()) {
+				m_scaled_size = size();
+				m_scaled = m_picture.scaled(size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+			}
+			painter.drawPixmap((width() - m_scaled.width()) / 2, (height() - m_scaled.height()) / 2,
+			                   m_scaled);
 		}
 		QLinearGradient shade(area.bottomLeft(), area.topLeft());
 		shade.setColorAt(0, QColor(0, 0, 0, 200));
 		shade.setColorAt(0.6, QColor(0, 0, 0, 30));
 		painter.fillRect(area, shade);
-		if (!m_icon.isNull()) {
+		if (!m_value.isEmpty()) {
+			auto value_font = PixelFont(this->font(), 26, QFont::Light);
+			painter.setFont(value_font);
+			painter.setPen(Qt::white);
+			const QRect value(16, 34, width() - 32, 34);
+			painter.drawText(value, Qt::AlignLeft | Qt::AlignVCenter,
+			                 QFontMetrics(value_font).elidedText(m_value, Qt::ElideRight, value.width()));
+		}
+		if (m_progress >= 0.0) {
+			const QRectF track(16, height() - 44, width() - 32, 4);
+			painter.setPen(Qt::NoPen);
+			painter.setBrush(QColor(255, 255, 255, 50));
+			painter.drawRoundedRect(track, 2, 2);
+			painter.setBrush(QColor(0x4f, 0x8c, 0xff));
+			painter.drawRoundedRect(
+			    QRectF(track.topLeft(), QSizeF(track.width() * std::clamp(m_progress, 0.0, 1.0), 4)), 2,
+			    2);
+		}
+		if (!m_icon.isNull() && m_value.isEmpty()) {
 			const QRect circle(16, height() - 76, 34, 34);
 			painter.setPen(Qt::NoPen);
 			painter.setBrush(QColor(255, 255, 255, 60));
@@ -492,6 +617,10 @@ private:
 	QString               m_badge;
 	QPixmap               m_picture;
 	QIcon                 m_icon;
+	QString               m_value;
+	qreal                 m_progress = -1.0;
+	QPixmap               m_scaled;
+	QSize                 m_scaled_size;
 };
 
 Ps5Home::Ps5Home(QTreeWidget* list, QWidget* parent): QWidget(parent), m_list(list) {
@@ -583,7 +712,8 @@ Ps5Home::Ps5Home(QTreeWidget* list, QWidget* parent): QWidget(parent), m_list(li
 	store->setFixedSize(TILE_SMALL, TILE_SMALL);
 	store->setToolTip(tr("Store : liste de compatibilité KytyPS5"));
 	store->setCursor(Qt::PointingHandCursor);
-	m_tiles = new TileRow(this);
+	auto* tiles = new TileRow(this);
+	m_tiles     = tiles;
 	m_tiles->setModel(list->model());
 	m_tiles->setSelectionModel(list->selectionModel());
 	m_tiles->setModelColumn(GAME_NAME_COLUMN);
@@ -596,7 +726,7 @@ Ps5Home::Ps5Home(QTreeWidget* list, QWidget* parent): QWidget(parent), m_list(li
 	m_tiles->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	m_tiles->setFrameShape(QFrame::NoFrame);
 	m_tiles->setFixedHeight(TILE_LARGE + 6); // the caption sits beside the tile, not under it
-	m_tiles->setItemDelegate(new TileDelegate(m_tiles));
+	m_tiles->setItemDelegate(new TileDelegate(tiles));
 	m_tiles->viewport()->setAutoFillBackground(false);
 	row->setContentsMargins(22, 0, 0, 0);
 	row->setSpacing(TILE_SPACING);
@@ -606,7 +736,9 @@ Ps5Home::Ps5Home(QTreeWidget* list, QWidget* parent): QWidget(parent), m_list(li
 	root->addStretch(1);
 
 	// Selected game: source line, title, description and actions.
-	auto* hero = new QVBoxLayout;
+	// In its own widget, so a game change fades the text in (see UpdateDetails).
+	m_hero     = new QWidget(this);
+	auto* hero = new QVBoxLayout(m_hero);
 	hero->setContentsMargins(64, 0, 64, 0);
 	hero->setSpacing(6);
 	m_source = new QLabel(this);
@@ -652,27 +784,43 @@ Ps5Home::Ps5Home(QTreeWidget* list, QWidget* parent): QWidget(parent), m_list(li
 	actions->addStretch();
 	hero->addSpacing(14);
 	hero->addLayout(actions);
-	root->addLayout(hero);
+	root->addWidget(m_hero);
+	auto* hero_opacity = new QGraphicsOpacityEffect(m_hero);
+	hero_opacity->setOpacity(1.0);
+	m_hero->setGraphicsEffect(hero_opacity);
+	// Like the tile caption: hidden while the tiles resize, then faded in.
+	m_hero_fade = new QPropertyAnimation(hero_opacity, "opacity", this);
+	m_hero_fade->setDuration(TileRow::TransitionMs);
+	m_hero_fade->setStartValue(0.0);
+	m_hero_fade->setKeyValueAt(0.38, 0.0);
+	m_hero_fade->setEndValue(1.0);
+	// The effect renders offscreen; drop it at rest so idle repaints stay direct.
+	connect(m_hero_fade, &QPropertyAnimation::finished, this,
+	        [hero_opacity]() { hero_opacity->setEnabled(false); });
+	hero_opacity->setEnabled(false);
 	root->addSpacing(26);
 
-	// Wide cards along the bottom.
-	auto* cards   = new QHBoxLayout;
-	m_trophy_card = new MediaCard(this, QColor(70, 54, 18), QColor(20, 14, 6),
-	                              [this]() { emit TrophiesRequested(); });
-	m_info_card   = new MediaCard(this, QColor(24, 40, 70), QColor(6, 10, 22),
-	                              [this]() { emit OpenFolderRequested(); });
-	m_setup_card  = new MediaCard(this, QColor(30, 90, 200), QColor(10, 30, 90),
-	                              [this]() { emit EditRequested(); });
-	m_lite_card   = new MediaCard(this, QColor(18, 120, 110), QColor(6, 30, 40),
-	                              [this]() { emit SettingsRequested(); });
+	// Dashboard cards along the bottom, all from real data: the game's trophies, every game's
+	// trophies, the connected controller, the game's disk and its settings.
+	auto* cards       = new QHBoxLayout;
+	m_trophy_card     = new MediaCard(this, QColor(70, 54, 18), QColor(20, 14, 6),
+	                                  [this]() { emit TrophiesRequested(); });
+	m_all_trophy_card = new MediaCard(this, QColor(60, 40, 90), QColor(14, 10, 26),
+	                                  [this]() { emit TrophyOverviewRequested(); });
+	m_pad_card        = new MediaCard(this, QColor(24, 40, 70), QColor(6, 10, 22),
+	                                  [this]() { emit InputRequested(); });
+	m_storage_card    = new MediaCard(this, QColor(18, 80, 90), QColor(6, 24, 30),
+	                                  [this]() { emit OpenFolderRequested(); });
+	m_setup_card      = new MediaCard(this, QColor(30, 90, 200), QColor(10, 30, 90),
+	                                  [this]() { emit EditRequested(); });
 	m_trophy_card->SetIcon(TintedIcon(QStringLiteral(":/icons/trophy.svg"), 20, ratio));
 	m_setup_card->SetIcon(GearIcon(ratio));
 	m_setup_card->SetContent(tr("Paramètres du jeu"), tr("CONFIGURATION"), {});
-	m_lite_card->SetContent(tr("Mode Lite : textures réduites, LTO + AVX2"), tr("PERFORMANCES"),
-	                        {});
+	m_all_trophy_card->SetContent(tr("Chargement..."), tr("TOUS LES TROPHÉES"), {});
+	SetControllerStatus({}, -1);
 	cards->setContentsMargins(64, 0, 0, 0);
 	cards->setSpacing(16);
-	for (auto* card: {m_trophy_card, m_info_card, m_setup_card, m_lite_card}) {
+	for (auto* card: {m_trophy_card, m_all_trophy_card, m_pad_card, m_storage_card, m_setup_card}) {
 		cards->addWidget(card, 1);
 	}
 	cards->addSpacing(24);
@@ -683,7 +831,7 @@ Ps5Home::Ps5Home(QTreeWidget* list, QWidget* parent): QWidget(parent), m_list(li
 	m_zones  = {{search, settings},
 	            {store, m_tiles},
 	            {m_play, more},
-	            {m_trophy_card, m_info_card, m_setup_card, m_lite_card}};
+	            {m_trophy_card, m_all_trophy_card, m_pad_card, m_storage_card, m_setup_card}};
 	m_zone_index = {0, 1, 0, 0};
 	for (const auto& zone: m_zones) {
 		for (auto* widget: zone) {
@@ -694,7 +842,9 @@ Ps5Home::Ps5Home(QTreeWidget* list, QWidget* parent): QWidget(parent), m_list(li
 		}
 	}
 	m_search->installEventFilter(this);
-	new GamepadNavigator(this);
+	new GamepadNavigator(this, [this](const QString& name, int battery) {
+		SetControllerStatus(name, battery);
+	});
 
 	connect(search, &QToolButton::clicked, this, [this]() {
 		const bool show = !m_search->isVisible();
@@ -716,9 +866,8 @@ Ps5Home::Ps5Home(QTreeWidget* list, QWidget* parent): QWidget(parent), m_list(li
 	connect(m_play, &QPushButton::clicked, this, &Ps5Home::RunRequested);
 	connect(m_tiles, &QListView::activated, this, &Ps5Home::RunRequested);
 	connect(list->selectionModel(), &QItemSelectionModel::currentChanged, this,
-	        [this](const QModelIndex& current) {
-		        m_tiles->doItemsLayout();
-		        m_tiles->scrollTo(current.siblingAtColumn(GAME_NAME_COLUMN));
+	        [this](const QModelIndex& /*current*/, const QModelIndex& previous) {
+		        static_cast<TileRow*>(m_tiles)->Transition(previous.isValid() ? previous.row() : -1);
 		        UpdateDetails();
 	        });
 	connect(list->model(), &QAbstractItemModel::dataChanged, this, [this]() {
@@ -895,8 +1044,10 @@ void Ps5Home::UpdateDetails() {
 		m_source->setText(QStringLiteral("KytyPS5 Lite"));
 		m_title->setText(empty ? tr("Aucun jeu trouvé") : tr("Choisis un jeu"));
 		m_description->setText(empty ? tr("Ajoute un dossier de jeux avec l'engrenage.") : QString());
-		m_trophy_card->SetContent(tr("Trophées"), tr("TROPHÉES"), {});
-		m_info_card->SetContent(tr("Infos du jeu"), tr("JEU"), {});
+		m_trophy_card->SetContent(tr("Aucun jeu sélectionné"), tr("TROPHÉES DU JEU"), {});
+		m_trophy_card->SetStats({});
+		m_storage_card->SetContent(tr("Aucun jeu sélectionné"), tr("STOCKAGE"), {});
+		m_storage_card->SetStats({});
 		m_art_base_dir.clear();
 		return;
 	}
@@ -915,14 +1066,75 @@ void Ps5Home::UpdateDetails() {
 		return;
 	}
 	m_art_base_dir = base;
-	QPixmap art;
+	if (isVisible()) {
+		m_hero->graphicsEffect()->setEnabled(true);
+		m_hero_fade->stop();
+		m_hero_fade->start();
+	}
+	// The background already shows pic0; the card takes the small icon0.
 	QPixmap icon;
 	if (!base.isEmpty()) {
-		art.loadFromData(
-		    GameContent::ReadFile(base, QStringLiteral("sce_sys/pic0.png"), GameContent::MaxImageSize));
 		icon.loadFromData(GameContent::ReadFile(base, QStringLiteral("sce_sys/icon0.png"),
 		                                        GameContent::MaxImageSize));
 	}
-	m_trophy_card->SetContent(tr("Trophées"), tr("TROPHÉES"), art);
-	m_info_card->SetContent(tr("Ouvrir le dossier du jeu"), column(GAME_SERIAL_COLUMN), icon);
+	m_trophy_card->SetContent(tr("Chargement des trophées..."), tr("TROPHÉES DU JEU"), icon);
+	m_trophy_card->SetStats({});
+
+	const QStorageInfo storage(base);
+	if (storage.isValid() && storage.bytesTotal() > 0) {
+		constexpr double GB   = 1000.0 * 1000.0 * 1000.0;
+		const auto       free = static_cast<double>(storage.bytesAvailable());
+		const auto       all  = static_cast<double>(storage.bytesTotal());
+		m_storage_card->SetContent(
+		    tr("%1 libres sur %2 Go").arg(QString::number(free / GB, 'f', 0), QString::number(all / GB, 'f', 0)),
+		    tr("STOCKAGE  ·  %1").arg(storage.rootPath()), {});
+		m_storage_card->SetStats(tr("%1 Go").arg(QString::number(free / GB, 'f', 0)), 1.0 - free / all);
+	} else {
+		m_storage_card->SetContent(tr("Disque introuvable"), tr("STOCKAGE"), {});
+		m_storage_card->SetStats({});
+	}
+}
+
+void Ps5Home::SetGameTrophies(const QString& base_dir, const Common::Trophies::Progress& progress) {
+	if (base_dir != m_art_base_dir) {
+		return; // the selection moved on while the trophies loaded
+	}
+	if (progress.total == 0) {
+		m_trophy_card->SetContent(tr("Aucun trophée pour ce jeu"), tr("TROPHÉES DU JEU"), {});
+		m_trophy_card->SetStats({});
+		return;
+	}
+	// Grades 1..4: platinum, gold, silver, bronze.
+	const auto& grade = progress.earned_grade;
+	m_trophy_card->SetContent(tr("Platine %1  ·  Or %2  ·  Argent %3  ·  Bronze %4")
+	                              .arg(grade[1])
+	                              .arg(grade[2])
+	                              .arg(grade[3])
+	                              .arg(grade[4]),
+	                          tr("TROPHÉES DU JEU  ·  %1 %").arg(progress.Percentage()), {});
+	m_trophy_card->SetStats(QStringLiteral("%1 / %2").arg(progress.earned).arg(progress.total),
+	                        static_cast<qreal>(progress.earned) / progress.total);
+}
+
+void Ps5Home::SetAllTrophies(const Common::Trophies::Progress& progress, int games) {
+	const auto& grade = progress.earned_grade;
+	m_all_trophy_card->SetContent(
+	    tr("%1 jeux  ·  Platine %2  ·  Or %3").arg(games).arg(grade[1]).arg(grade[2]),
+	    tr("TOUS LES TROPHÉES"), {});
+	m_all_trophy_card->SetStats(
+	    tr("%1 obtenus").arg(progress.earned),
+	    progress.total != 0 ? static_cast<qreal>(progress.earned) / progress.total : 0.0);
+}
+
+void Ps5Home::SetControllerStatus(const QString& name, int battery) {
+	if (name.isEmpty()) {
+		m_pad_card->SetContent(tr("Branche une manette (USB ou Bluetooth)"), tr("MANETTE"), {});
+		m_pad_card->SetStats(tr("Aucune"));
+		return;
+	}
+	const auto power = battery > 100 ? tr("Filaire")
+	                   : battery >= 0 ? tr("Batterie %1 %").arg(battery)
+	                                  : tr("Batterie inconnue");
+	m_pad_card->SetContent(power, tr("MANETTE CONNECTÉE"), {});
+	m_pad_card->SetStats(name, battery >= 0 && battery <= 100 ? battery / 100.0 : -1.0);
 }

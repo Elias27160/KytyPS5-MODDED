@@ -3,6 +3,7 @@
 
 #include "gameContent.h"
 
+#include <QCache>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QListView>
@@ -15,6 +16,9 @@
 #include <QString>
 #include <QStyledItemDelegate>
 #include <QTreeWidget>
+#include <QVariantAnimation>
+
+#include <algorithm>
 
 inline constexpr int GAME_NAME_COLUMN             = 0;
 inline constexpr int GAME_SERIAL_COLUMN           = 1;
@@ -28,19 +32,51 @@ inline constexpr int GAME_COMMENT_COLUMN          = 7;
 // Holds the transparent list and grid views and paints the selected game's pic0 behind both.
 class GameViews: public QStackedWidget {
 public:
-	using QStackedWidget::QStackedWidget;
+	explicit GameViews(QWidget* parent = nullptr): QStackedWidget(parent) {
+		m_cache.setMaxCost(48 * 1024); // KiB: a handful of full-size pic0 images
+		// The art holds for 180 ms while the game tiles resize, then eases over 300 ms.
+		m_fade.setDuration(480);
+		m_fade.setStartValue(0.0);
+		m_fade.setEndValue(1.0);
+		connect(&m_fade, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+			const qreal t = std::clamp((value.toReal() * 480.0 - 180.0) / 300.0, 0.0, 1.0);
+			m_fade_value  = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+			update();
+		});
+		connect(&m_fade, &QVariantAnimation::finished, this, [this]() {
+			m_fade_value = 1.0;
+			m_previous   = QPixmap();
+			update();
+		});
+	}
 
 	void SetBackgroundImage(const QString& key) {
 		if (m_path == key) {
 			return;
 		}
-		m_path   = key;
-		m_source = QPixmap();
-		if (!key.isEmpty()) {
-			m_source.loadFromData(GameContent::ReadFile(key, QStringLiteral("sce_sys/pic0.png"),
-			                                            GameContent::MaxImageSize));
+		m_path = key;
+		// Lite: games revisited while browsing skip the archive read and PNG decode.
+		if (const auto* cached = m_cache.object(key); cached != nullptr) {
+			m_source = *cached;
+		} else {
+			m_source = QPixmap();
+			if (!key.isEmpty()) {
+				m_source.loadFromData(GameContent::ReadFile(key, QStringLiteral("sce_sys/pic0.png"),
+				                                            GameContent::MaxImageSize));
+				m_cache.insert(key, new QPixmap(m_source),
+				               m_source.width() * m_source.height() * 4 / 1024 + 1);
+			}
 		}
+		// Lite: cross-fade from the art on screen, the way a console dashboard switches games.
+		m_previous = isVisible() ? m_scaled : QPixmap();
 		UpdateScaledBackground();
+		if (m_previous.isNull()) {
+			m_fade.stop();
+			m_fade_value = 1.0;
+		} else {
+			m_fade.stop();
+			m_fade.start();
+		}
 		update();
 	}
 
@@ -50,18 +86,44 @@ protected:
 		UpdateScaledBackground();
 	}
 
-	void paintEvent(QPaintEvent* /*event*/) override {
-		QPainter    painter(this);
-		const QRect area = rect();
-		if (m_scaled.isNull()) {
-			QLinearGradient blue(area.topLeft(), area.bottomRight());
-			blue.setColorAt(0, QColor(12, 34, 82));
-			blue.setColorAt(1, QColor(2, 8, 24));
-			painter.fillRect(area, blue);
+	void paintEvent(QPaintEvent* event) override {
+		QPainter   painter(this);
+		const auto layer = [&](const QPixmap& art) {
+			if (art.isNull()) {
+				QLinearGradient blue(rect().topLeft(), rect().bottomRight());
+				blue.setColorAt(0, QColor(12, 34, 82));
+				blue.setColorAt(1, QColor(2, 8, 24));
+				painter.fillRect(event->rect(), blue);
+			} else {
+				painter.drawPixmap(0, 0, art); // clipped to the update region
+			}
+		};
+		// Two blits of pre-shaded, widget-sized frames, so a fade costs little per frame.
+		if (m_fade_value < 1.0) {
+			layer(m_previous);
+			painter.setOpacity(m_fade_value);
+		}
+		layer(m_scaled);
+	}
+
+private:
+	// The art cover-scaled to the widget with the shading baked in.
+	void UpdateScaledBackground() {
+		if (m_source.isNull() || size().isEmpty()) {
+			m_scaled = QPixmap();
 			return;
 		}
-		painter.drawPixmap((width() - m_scaled.width()) / 2, (height() - m_scaled.height()) / 2,
-		                   m_scaled);
+		const qreal ratio = devicePixelRatioF();
+		auto        art   = m_source.scaled(size() * ratio, Qt::KeepAspectRatioByExpanding,
+		                                    Qt::SmoothTransformation);
+		art.setDevicePixelRatio(ratio);
+		m_scaled = QPixmap(size() * ratio);
+		m_scaled.setDevicePixelRatio(ratio);
+		QPainter    painter(&m_scaled);
+		const QRect area = rect();
+		const auto logical = art.deviceIndependentSize();
+		painter.drawPixmap(QPointF((width() - logical.width()) / 2, (height() - logical.height()) / 2),
+		                   art);
 		// Lite: console-style shading keeps text readable on the left and bottom, art on the right.
 		QLinearGradient left(area.topLeft(), area.topRight());
 		left.setColorAt(0, QColor(0, 0, 0, 215));
@@ -75,16 +137,13 @@ protected:
 		painter.fillRect(area, bottom);
 	}
 
-private:
-	void UpdateScaledBackground() {
-		m_scaled = m_source.isNull() ? QPixmap()
-		                             : m_source.scaled(size(), Qt::KeepAspectRatioByExpanding,
-		                                               Qt::SmoothTransformation);
-	}
-
-	QString m_path;
-	QPixmap m_source;
-	QPixmap m_scaled;
+	QString                  m_path;
+	QPixmap                  m_source;
+	QPixmap                  m_scaled;
+	QPixmap                  m_previous; // the art fading out
+	QVariantAnimation        m_fade;
+	qreal                    m_fade_value = 1.0;
+	QCache<QString, QPixmap> m_cache;
 };
 
 // Marks a title that supports PS5 Pro mode with a pill in the top-right corner of its cover.

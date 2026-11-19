@@ -1,6 +1,8 @@
 #ifndef PS5_HOME_H
 #define PS5_HOME_H
 
+#include "common/trophies.h"
+
 #include <QWidget>
 
 #include <vector>
@@ -10,6 +12,7 @@ class QLabel;
 class QLayout;
 class QLineEdit;
 class QListView;
+class QPropertyAnimation;
 class QPushButton;
 class QToolButton;
 class QTreeWidget;
@@ -26,6 +29,10 @@ public:
 
 	void SetRowHidden(int row, bool hidden);
 	void FocusTiles();
+	// Trophies earned in the game at `base_dir`; ignored once another game is selected.
+	void SetGameTrophies(const QString& base_dir, const Common::Trophies::Progress& progress);
+	// Trophies earned across `games` games.
+	void SetAllTrophies(const Common::Trophies::Progress& progress, int games);
 
 protected:
 	// Console-style focus moves: arrows between and within the bar, tiles, actions and cards.
@@ -49,6 +56,7 @@ private:
 	void                  FocusZone(int zone, int index);
 	[[nodiscard]] bool    MoveFocus(QWidget* from, int key);
 	void                  Activate(QWidget* widget);
+	void                  SetControllerStatus(const QString& name, int battery);
 
 	// Focus zones, top to bottom: bar buttons, store + tiles, actions, cards.
 	std::vector<std::vector<QWidget*>> m_zones;
@@ -63,11 +71,15 @@ private:
 	QLabel*      m_description  = nullptr;
 	QLabel*      m_clock        = nullptr;
 	QPushButton* m_play         = nullptr;
-	MediaCard*   m_trophy_card  = nullptr;
-	MediaCard*   m_info_card    = nullptr;
-	MediaCard*   m_setup_card   = nullptr;
-	MediaCard*   m_lite_card    = nullptr;
-	QString      m_art_base_dir;
+	MediaCard*   m_trophy_card     = nullptr;
+	MediaCard*   m_all_trophy_card = nullptr;
+	MediaCard*   m_pad_card        = nullptr;
+	MediaCard*   m_storage_card    = nullptr;
+	MediaCard*   m_setup_card      = nullptr;
+	QWidget*     m_hero            = nullptr;
+	// Game changes fade the hero text in, in step with the tile row's transition.
+	QPropertyAnimation* m_hero_fade = nullptr;
+	QString             m_art_base_dir;
 };
 
 // Drops the spacers and spacing left in layouts whose widgets the Lite home hides, so the hidden

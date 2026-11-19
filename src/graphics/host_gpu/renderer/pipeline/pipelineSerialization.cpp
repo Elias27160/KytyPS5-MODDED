@@ -164,8 +164,7 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 	    records.size() >= header.size() && std::ranges::equal(records.first(header.size()), header);
 	if (reusable) {
 		records = records.subspan(header.size());
-		while (LoadRecord(records)) {
-		}
+		LoadRecords(records);
 	}
 	// A damaged record ends the store; the records before it stay.
 	m_store.Open(path, header, reusable ? bytes.size() - records.size() : 0);
@@ -202,24 +201,56 @@ void PipelineCache::WarmUp(const std::filesystem::path& path) {
 	        .count()));
 }
 
-bool PipelineCache::LoadRecord(std::span<const uint8_t>& records) {
+// Verifies and decompresses one framed record into `raw`.
+static bool DecodeFrame(std::span<const uint8_t> framed, std::vector<uint8_t>& raw) {
 	Frame frame;
-	if (records.size() < sizeof(frame)) {
-		return false;
-	}
-	std::memcpy(&frame, records.data(), sizeof(frame));
-	if (records.size() - sizeof(frame) < frame.compressed_size) {
-		return false;
-	}
-	const auto compressed = records.subspan(sizeof(frame), frame.compressed_size);
+	std::memcpy(&frame, framed.data(), sizeof(frame));
+	const auto compressed = framed.subspan(sizeof(frame));
 	if (XXH3_64bits(compressed.data(), compressed.size()) != frame.checksum ||
 	    ZSTD_getFrameContentSize(compressed.data(), compressed.size()) != frame.raw_size) {
 		return false;
 	}
-	std::vector<uint8_t> raw(frame.raw_size);
-	if (ZSTD_decompress(raw.data(), raw.size(), compressed.data(), compressed.size()) != raw.size()) {
-		return false;
+	raw.resize(frame.raw_size);
+	return ZSTD_decompress(raw.data(), raw.size(), compressed.data(), compressed.size()) ==
+	       raw.size();
+}
+
+void PipelineCache::LoadRecords(std::span<const uint8_t>& records) {
+	// Lite: frames are checked and decompressed on every core, a bounded batch at a time so the
+	// decoded records never all sit in memory; they still apply one by one, in store order.
+	constexpr size_t                       Batch = 256;
+	std::vector<std::span<const uint8_t>> frames;
+	std::vector<std::vector<uint8_t>>      raws(Batch);
+	std::vector<uint8_t>                   decoded(Batch);
+	for (;;) {
+		frames.clear();
+		for (auto cursor = records; frames.size() < Batch;) {
+			Frame frame;
+			if (cursor.size() < sizeof(frame)) {
+				break;
+			}
+			std::memcpy(&frame, cursor.data(), sizeof(frame));
+			if (cursor.size() - sizeof(frame) < frame.compressed_size) {
+				break; // a partial record from an interrupted write
+			}
+			frames.push_back(cursor.first(sizeof(frame) + frame.compressed_size));
+			cursor = cursor.subspan(frames.back().size());
+		}
+		Common::ParallelFor(frames.size(),
+		                    [&](size_t i) { decoded[i] = DecodeFrame(frames[i], raws[i]) ? 1 : 0; });
+		for (size_t i = 0; i < frames.size(); i++) {
+			if (decoded[i] == 0 || !ApplyRecord(raws[i])) {
+				return;
+			}
+			records = records.subspan(frames[i].size());
+		}
+		if (frames.size() < Batch) {
+			return;
+		}
 	}
+}
+
+bool PipelineCache::ApplyRecord(std::span<const uint8_t> raw) {
 	Reader     reader {raw};
 	auto       type     = Record::Module;
 	const auto complete = [&] { return reader.ok && reader.bytes.empty(); };
@@ -269,7 +300,6 @@ bool PipelineCache::LoadRecord(std::span<const uint8_t>& records) {
 		}
 		default: return false;
 	}
-	records = records.subspan(sizeof(frame) + compressed.size());
 	return true;
 }
 

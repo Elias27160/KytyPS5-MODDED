@@ -3,6 +3,7 @@
 
 #include "configuration.h"
 
+#include <QElapsedTimer>
 #include <QMap>
 #include <QString>
 #include <QStringList>
@@ -46,6 +47,9 @@ public:
 	void ScanGameDirectory();
 	void ViewTrophies();
 	void ViewTrophyOverview();
+	// Lite home: reads earned trophies on a worker thread and shows them on the dashboard cards.
+	void LoadGameTrophies(const ConfigurationItem& item);
+	void LoadAllTrophies();
 
 signals:
 
@@ -94,6 +98,7 @@ private:
 	CompatibilityDatabase*        m_compatibility = nullptr;
 	ControllerPreview*            m_controller_preview = nullptr;
 	Ps5Home*                      m_ps5_home           = nullptr;
+	QElapsedTimer                 m_trophies_loaded; // since the last full trophy read
 };
 
 #endif // CONFIGURATION_LIST_WIDGET_H

@@ -56,6 +56,7 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStyle>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QUrl>
@@ -319,13 +320,16 @@ ConfigurationListWidget::ConfigurationListWidget(QWidget* parent)
 	connect(m_ps5_home, &Ps5Home::SearchChanged, this,
 	        &ConfigurationListWidget::filter_configurations);
 
-	if (m_compatibility->IsLocal()) {
-		m_compatibility->Load();
-	}
-	ScanGameDirectory();
-	if (!m_compatibility->IsLocal()) {
-		m_compatibility->Load();
-	}
+	// Lite: scan once the event loop runs, so the window shows before every game is read.
+	QTimer::singleShot(0, this, [this]() {
+		if (m_compatibility->IsLocal()) {
+			m_compatibility->Load();
+		}
+		ScanGameDirectory();
+		if (!m_compatibility->IsLocal()) {
+			m_compatibility->Load();
+		}
+	});
 }
 
 ConfigurationListWidget::~ConfigurationListWidget() {
@@ -338,6 +342,66 @@ void ConfigurationListWidget::changeEvent(QEvent* event) {
 	if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::PaletteChange) {
 		UpdateToolbarIcons();
 	}
+	// Back from a game: trophies it unlocked show up. At most twice a minute, as it reads every game.
+	if (event->type() == QEvent::ActivationChange && isActiveWindow() && m_trophies_loaded.isValid() &&
+	    m_trophies_loaded.elapsed() > 30'000) {
+		LoadAllTrophies();
+		if (m_selected_item != nullptr) {
+			LoadGameTrophies(*m_selected_item);
+		}
+	}
+}
+
+void ConfigurationListWidget::LoadGameTrophies(const ConfigurationItem& item) {
+	if (m_ps5_home == nullptr) {
+		return;
+	}
+	std::shared_ptr<const Configuration> config = CreateConfiguration(item);
+	auto* watcher = new QFutureWatcher<Common::Trophies::Progress>(this);
+	connect(watcher, &QFutureWatcher<Common::Trophies::Progress>::finished, this,
+	        [this, watcher, base = config->basedir] {
+		        watcher->deleteLater();
+		        m_ps5_home->SetGameTrophies(base, watcher->result());
+	        });
+	watcher->setFuture(QtConcurrent::run([config, directory = m_runtime_directory] {
+		return TrophyViewerDialog::GetProgress(config.get(), directory);
+	}));
+}
+
+void ConfigurationListWidget::LoadAllTrophies() {
+	if (m_ps5_home == nullptr) {
+		return;
+	}
+	m_trophies_loaded.start();
+	std::vector<std::shared_ptr<const Configuration>> games;
+	for (int index = 0; index < m_ui->cfgs_list->topLevelItemCount(); ++index) {
+		games.push_back(CreateConfiguration(
+		    *static_cast<const ConfigurationItem*>(m_ui->cfgs_list->topLevelItem(index))));
+	}
+	using Totals = std::pair<Common::Trophies::Progress, int>;
+	auto* watcher = new QFutureWatcher<Totals>(this);
+	connect(watcher, &QFutureWatcher<Totals>::finished, this, [this, watcher] {
+		watcher->deleteLater();
+		const auto& [progress, count] = watcher->result();
+		m_ps5_home->SetAllTrophies(progress, count);
+	});
+	watcher->setFuture(QtConcurrent::run([games = std::move(games), directory = m_runtime_directory] {
+		Totals totals {};
+		for (const auto& game: games) {
+			const auto progress = TrophyViewerDialog::GetProgress(game.get(), directory);
+			if (progress.total == 0) {
+				continue;
+			}
+			totals.second++;
+			totals.first.total += progress.total;
+			totals.first.earned += progress.earned;
+			for (size_t grade = 0; grade < progress.earned_grade.size(); ++grade) {
+				totals.first.total_grade[grade] += progress.total_grade[grade];
+				totals.first.earned_grade[grade] += progress.earned_grade[grade];
+			}
+		}
+		return totals;
+	}));
 }
 
 void ConfigurationListWidget::UpdateToolbarIcons() {
@@ -856,6 +920,7 @@ void ConfigurationListWidget::ScanGameDirectory() {
 	}
 	m_ui->cfgs_list->setCurrentItem(selected_item);
 	SelectItem(selected_item);
+	LoadAllTrophies();
 }
 
 void ConfigurationListWidget::edit_configuration() {
@@ -1292,6 +1357,7 @@ void ConfigurationListWidget::SelectItem(QTreeWidgetItem* witem) {
 
 	m_selected_item = item;
 	m_ui->game_views->SetBackgroundImage(item->GetInfo().basedir);
+	LoadGameTrophies(*item);
 
 	emit Select();
 }
