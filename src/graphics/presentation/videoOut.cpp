@@ -845,6 +845,19 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		if (total_wait.count() < 0) {
 			Common::DebugCounters::Add(Common::DebugCounters::Counter::LateVblanks);
 		}
+		// Lite: games that time themselves by the vblank count ran in slow motion whenever a flip
+		// took longer than a period, since each pass counted one vblank. Count the periods that
+		// passed instead, so the count keeps real time; after a long stall (loading) only the last
+		// quarter second is caught up, not a burst of every missed vblank.
+		const auto max_debt = period * (Config::GetVblankFrequency() / 4);
+		if (total_wait < -max_debt) {
+			total_wait = -max_debt;
+		}
+		while (total_wait <= -period && !token.stop_requested()) {
+			VblankBegin();
+			VblankEnd();
+			total_wait += period;
+		}
 	}
 }
 
