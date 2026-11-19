@@ -33,8 +33,9 @@ The original KytyPS5 README is kept in [README-KytyPS5.md](README-KytyPS5.md).
   avoids overcommitting video memory.
 - **Presentation on a separate Vulkan queue** when the GPU supports it, so presenting a frame
   does not block GPU submissions.
-- **Lighter texture filtering**: anisotropic filtering on material textures drops to bilinear,
-  with a mip bias based on VRAM (less bandwidth on small cards).
+- **Optional lighter texture filtering** (`KYTY_LITE_LOW_FILTER=1`, off by default): material
+  textures drop to bilinear with a mip bias based on VRAM. Less bandwidth, but blurry and
+  smeared characters on small cards, so rendering matches the official build unless you set it.
 - **Windows priority**: the process runs at above-normal priority, opts out of Windows 11
   EcoQoS power throttling and uses a 1 ms timer for steadier frame pacing.
 - **Profiler zones removed** from the hottest code paths.
@@ -47,6 +48,8 @@ The original KytyPS5 README is kept in [README-KytyPS5.md](README-KytyPS5.md).
 - **Cropped picture**: a 1920×1080 window plus its title bar did not fit a 1080p screen (even
   less with Windows display scaling) and cut off the picture and the HUD. The game window now
   opens maximized, sized to the usable screen area, without distorting the picture.
+- **Smeared or blob-like characters** (v1.0.1): v1.0 lowered texture detail on every card, down
+  to 1/8 resolution on 4 GB cards. That filter is now off by default.
 - **GPU device losses**: render areas and copies between images of different sizes now stay
   within image bounds (crash seen in UFC).
 - **TLS slot reserved before NVIDIA drivers load**, since they use most of the available slots.
@@ -76,6 +79,7 @@ The original KytyPS5 README is kept in [README-KytyPS5.md](README-KytyPS5.md).
 | --- | --- |
 | `KYTY_LITE_4K=1` | Restores the original 4K output |
 | `KYTY_LITE_STOCK_GC=1` | Restores the original VRAM garbage collector |
+| `KYTY_LITE_LOW_FILTER=1` | Lighter, blurrier texture filtering for low-end GPUs |
 | `KYTY_LITE_BENCH=<file>` | Writes the overlay's measurements to a CSV file |
 | `KYTY_LITE_DEVICE_FAULT=1` | Vulkan details after a GPU device loss |
 | `KYTY_LITE_PREFETCH=1` | GPU readback prefetch (slower in UFC) |
@@ -83,7 +87,9 @@ The original KytyPS5 README is kept in [README-KytyPS5.md](README-KytyPS5.md).
 
 ## Requirements
 
-- Windows 10 or 11, 64-bit.
+- Windows 10 (1903 or newer) or 11, 64-bit.
+- [Microsoft Visual C++ Redistributable 2015-2022 (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe),
+  a recent version.
 - **CPU with AVX2**: this build is compiled with `/arch:AVX2`. CPUs without AVX2 cannot run it.
 - Vulkan-capable graphics card. Only tested on a GTX 1660 SUPER (6 GB) with a Ryzen 5 4500 and
   16 GB of RAM.
