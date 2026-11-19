@@ -13,6 +13,20 @@ KytyPS5 Lite starts from KytyPS5 (upstream commit `b3295beb`) and adds optimizat
 mid-range PCs, a console-style launcher and a few fixes. Everything else is KytyPS5's code.
 The original KytyPS5 README is kept in [README-KytyPS5.md](README-KytyPS5.md).
 
+## Download and install
+
+1. Install the [Microsoft Visual C++ Redistributable 2015-2022 (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+   if you do not have a recent version.
+2. Download `KytyPS5-Lite-v1.0.1-win64.zip` (or newer) from the
+   [Releases page](https://github.com/Elias27160/KytyPS5-MODDED/releases/latest).
+3. Extract the zip to a folder of your choice. There is no installer.
+4. Run `kyty_launcher.exe`.
+5. On first launch, open the settings (gear icon) and add the folder that holds your games: a
+   folder with `eboot.bin`, or a `.zar` archive. The launcher finds them on its own.
+
+You do not need the official KytyPS5 or any other emulator. Updating: extract the new zip over
+the old folder; your saves (`_SaveData`) and settings (`Kyty.ini`) stay.
+
 ## What the modded build adds
 
 ### Engine performance
