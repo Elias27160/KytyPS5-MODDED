@@ -5,6 +5,8 @@
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 
+#include <cstdlib>
+
 namespace Libs::Graphics {
 
 SamplerCache::~SamplerCache() {
@@ -128,7 +130,10 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
     );
 	sampler_info.anisotropyEnable        = (aniso ? VK_TRUE : VK_FALSE);
 	sampler_info.maxAnisotropy           = aniso_ratio;
-	if (aniso) {
+	// Lite low filter (opt-in, KYTY_LITE_LOW_FILTER=1): lower mips read material textures at up to
+	// 1/8 of their size, which can smear characters on small cards. Off by default.
+	static const bool low_filter = std::getenv("KYTY_LITE_LOW_FILTER") != nullptr;
+	if (aniso && low_filter) {
 		// Lite: games ask for anisotropic filtering on scene material textures only, never on
 		// lookup tables or depth pyramids, so only those samplers drop to bilinear and lower mips.
 		// Smaller cards get a larger bias: fewer texels fetched, less bandwidth.
