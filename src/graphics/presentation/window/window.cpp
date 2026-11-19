@@ -24,6 +24,7 @@
 #include "loader/systemContent.h"
 
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fmt/format.h>
@@ -827,6 +828,18 @@ static void WindowCreate(WindowContext& context) {
 		window_flags |= static_cast<uint32_t>(SDL_WINDOW_BORDERLESS);
 	}
 #endif
+	// Lite: a 1920x1080 game window plus its title bar does not fit a 1920x1080 desktop (less
+	// with display scaling), and the parts off screen cropped the picture and its HUD. Open it
+	// maximized and no larger than the usable area; the presenter keeps the aspect ratio.
+	if (SDL_Rect usable {}; !Config::FullscreenEnabled() &&
+	                        SDL_GetDisplayUsableBounds(SDL_GetPrimaryDisplay(), &usable) &&
+	                        usable.w > 0 && usable.h > 0 && (width >= usable.w || height >= usable.h)) {
+		const float scale = std::min(static_cast<float>(usable.w) / static_cast<float>(width),
+		                             static_cast<float>(usable.h) / static_cast<float>(height));
+		width        = std::max(1, static_cast<int>(static_cast<float>(width) * scale));
+		height       = std::max(1, static_cast<int>(static_cast<float>(height) * scale));
+		window_flags |= static_cast<uint32_t>(SDL_WINDOW_MAXIMIZED);
+	}
 	context.window = SDL_CreateWindow(KYTY_SDL_WINDOW_CAPTION, width, height, window_flags);
 
 	if (context.window == nullptr) {
