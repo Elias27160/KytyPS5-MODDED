@@ -107,7 +107,7 @@ Same toolchain as KytyPS5 on Windows: Visual Studio 2022 or newer, LLVM (`clang-
 Ninja and Qt 6. The third-party libraries are Git submodules, so clone recursively:
 
 ```bat
-git clone --recursive https://github.com/<your-account>/KytyPS5-Lite.git
+git clone --recursive https://github.com/Elias27160/KytyPS5-MODDED.git
 ```
 
 Then, from a Visual Studio x64 developer prompt, the commands used for this build:
